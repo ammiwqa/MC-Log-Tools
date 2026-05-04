@@ -1,27 +1,14 @@
 use flate2::read::GzDecoder;
 use rayon::prelude::*;
-use std::fs::{create_dir_all, File};
+use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::Path;
 
 use encoding_rs::WINDOWS_1251;
 use memchr::{memchr, memmem};
 
 const BUF_SIZE: usize = 256 * 1024;
-const LOCAL_BUF_SIZE: usize = 512 * 1024;
-
-#[derive(Default)]
-struct Stats {
-    total: Duration,
-    read: Duration,
-    filter: Duration,
-    decode: Duration,
-    write: Duration,
-    lines: usize,
-    matched: usize,
-    errors: usize,
-}
+const TS_WIDTH: usize = 12;
 
 fn main() -> std::io::Result<()> {
     let files = vec![
@@ -31,85 +18,65 @@ fn main() -> std::io::Result<()> {
         r"C:\Users\Wqaya\AppData\Roaming\CheatBreaker\downloads\logs\1.8.9\2026-05-01-1.log.gz".to_string(),
         r"C:\Users\Wqaya\AppData\Roaming\CheatBreaker\downloads\logs\1.8.9\2026-04-29-1.log.gz".to_string(),
         r"C:\Users\Wqaya\AppData\Roaming\CheatBreaker\downloads\logs\1.8.9\2026-04-30-2.log.gz".to_string(),
+        r"D:\Archives\Minecraft\logs\full-logs2\slFull\2023-04-24-1.log.gz".to_string(),
+        r"D:\Archives\Minecraft\logs\full-logs2\slFull\2023-04-28-2.log.gz".to_string(),
+        r"D:\Archives\Minecraft\logs\full-logs2\slFull\2023-07-23-6.log.gz".to_string(),
+        r"D:\Archives\Minecraft\logs\full-logs2\slFull\2023-08-21-5.log.gz".to_string(),
+        r"D:\Data\blcMC\.minecraft\logs\blclient\minecraft\2025-08-04-3.log.gz".to_string(),
+        r"D:\Data\blcMC\.minecraft\logs\blclient\minecraft\2025-07-25-2.log.gz".to_string(),
     ];
 
-    let out_dir = "output_parts";
-    create_dir_all(out_dir)?;
-
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(num_cpus::get_physical())
-        .build_global()
-        .unwrap();
-
+    // 🔥 читаем параллельно
     let results: Vec<_> = files
         .par_iter()
-        .map(|file| process_file(file, out_dir))
+        .map(|f| process_file(f))
         .collect();
 
-    let mut total = Stats::default();
+    let mut all: Vec<(i64, String)> = Vec::new();
 
     for res in results {
-        if let Ok(s) = res {
-            total.total += s.total;
-            total.read += s.read;
-            total.filter += s.filter;
-            total.decode += s.decode;
-            total.write += s.write;
-            total.lines += s.lines;
-            total.matched += s.matched;
-            total.errors += s.errors;
+        if let Ok(mut v) = res {
+            all.append(&mut v);
         }
     }
 
-    println!("\n=== TOTAL ===");
-    println!("total:   {:?}", total.total);
-    println!("read:    {:?}", total.read);
-    println!("filter:  {:?}", total.filter);
-    println!("decode:  {:?}", total.decode);
-    println!("write:   {:?}", total.write);
-    println!("lines:   {}", total.lines);
-    println!("matched: {}", total.matched);
-    println!("errors: {}", total.errors);
+    // 🔥 сортировка
+    all.sort_unstable_by_key(|x| x.0);
+
+    // 🔥 запись
+    let mut writer = BufWriter::new(File::create("final.txt")?);
+
+    for (ts, line) in all {
+        write_fixed_ts(&mut writer, ts)?;
+        writer.write_all(b" ")?;
+        writer.write_all(line.as_bytes())?;
+        writer.write_all(b"\n")?;
+    }
 
     Ok(())
 }
 
-fn process_file(file_path: &str, out_dir: &str) -> std::io::Result<Stats> {
-    let total_start = Instant::now();
-
+fn process_file(file_path: &str) -> std::io::Result<Vec<(i64, String)>> {
     let file = File::open(file_path)?;
     let decoder = GzDecoder::new(file);
     let mut reader = BufReader::with_capacity(BUF_SIZE, decoder);
 
     let filename = Path::new(file_path)
         .file_name()
-        .unwrap_or_default()
+        .unwrap()
         .to_string_lossy();
 
-    // 🔥 парсим дату файла один раз
     let (y, m, d) = parse_file_date(&filename);
     let base_day = to_unix_days(y, m, d);
 
-    let thread_id = format!("{:?}", std::thread::current().id());
-    let mut out_path = PathBuf::from(out_dir);
-    out_path.push(format!("{}_{}.txt", filename, thread_id));
-
-    let out_file = File::create(out_path)?;
-    let mut writer = BufWriter::with_capacity(BUF_SIZE, out_file);
-
-    let mut stats = Stats::default();
-    let mut local_buf = Vec::with_capacity(LOCAL_BUF_SIZE);
-
     let mut force_ansi = false;
+    let mut result = Vec::with_capacity(10000);
 
     let mut buf = vec![0u8; BUF_SIZE];
     let mut leftover = Vec::new();
 
     loop {
-        let read_start = Instant::now();
         let n = reader.read(&mut buf)?;
-        stats.read += read_start.elapsed();
-
         if n == 0 {
             break;
         }
@@ -118,59 +85,19 @@ fn process_file(file_path: &str, out_dir: &str) -> std::io::Result<Stats> {
 
         if !leftover.is_empty() {
             leftover.extend_from_slice(data);
-            process_buffer(
-                &leftover,
-                base_day,
-                &mut force_ansi,
-                &mut stats,
-                &mut local_buf,
-            );
+            process_buffer(&leftover, base_day, &mut force_ansi, &mut result);
             leftover.clear();
         } else {
-            process_buffer(
-                data,
-                base_day,
-                &mut force_ansi,
-                &mut stats,
-                &mut local_buf,
-            );
+            process_buffer(data, base_day, &mut force_ansi, &mut result);
         }
 
         if let Some(pos) = data.iter().rposition(|&b| b == b'\n') {
             leftover.clear();
             leftover.extend_from_slice(&data[pos + 1..]);
         }
-
-        if local_buf.len() >= LOCAL_BUF_SIZE {
-            let write_start = Instant::now();
-            writer.write_all(&local_buf)?;
-            stats.write += write_start.elapsed();
-            local_buf.clear();
-        }
     }
 
-    if !local_buf.is_empty() {
-        let write_start = Instant::now();
-        writer.write_all(&local_buf)?;
-        stats.write += write_start.elapsed();
-    }
-
-    stats.total = total_start.elapsed();
-
-    println!(
-        "[{}] total: {:?}, read: {:?}, filter: {:?}, decode: {:?}, write: {:?}, lines: {}, matched: {}, errors: {}",
-        filename,
-        stats.total,
-        stats.read,
-        stats.filter,
-        stats.decode,
-        stats.write,
-        stats.lines,
-        stats.matched,
-        stats.errors
-    );
-
-    Ok(stats)
+    Ok(result)
 }
 
 #[inline(always)]
@@ -178,8 +105,7 @@ fn process_buffer(
     data: &[u8],
     base_day: i64,
     force_ansi: &mut bool,
-    stats: &mut Stats,
-    local_buf: &mut Vec<u8>,
+    result: &mut Vec<(i64, String)>,
 ) {
     let mut start = 0;
 
@@ -188,23 +114,15 @@ fn process_buffer(
             let line = &data[start..i];
             start = i + 1;
 
-            stats.lines += 1;
-
             if memchr(b'H', line).is_none() {
                 continue;
             }
 
-            let filter_start = Instant::now();
-            let matched = memmem::find(line, b"[CHAT]").is_some();
-            stats.filter += filter_start.elapsed();
-
-            if !matched {
+            if memmem::find(line, b"[CHAT]").is_none() {
                 continue;
             }
 
-            stats.matched += 1;
-
-            // 🔥 PARSE TIME
+            // --- parse time ---
             let parsed = if line.len() > 10 && line.get(3) == Some(&b':') {
                 parse_hms(line)
             } else {
@@ -213,16 +131,12 @@ fn process_buffer(
 
             let (h, m, s) = match parsed {
                 Some(v) => v,
-                None => {
-                    stats.errors += 1;
-                    continue;
-                }
+                None => continue,
             };
 
             let unix_time = base_day * 86400 + (h * 3600 + m * 60 + s) as i64;
 
-            let decode_start = Instant::now();
-
+            // --- decode ---
             let text: std::borrow::Cow<str> = if *force_ansi {
                 WINDOWS_1251.decode(line).0
             } else {
@@ -235,27 +149,25 @@ fn process_buffer(
                 }
             };
 
-            stats.decode += decode_start.elapsed();
-
-            write_line(local_buf, unix_time, text.as_ref());
+            result.push((unix_time, text.into_owned()));
         }
     }
 }
 
 #[inline(always)]
-fn write_line(buf: &mut Vec<u8>, ts: i64, text: &str) {
-    buf.extend_from_slice(ts.to_string().as_bytes());
-    buf.push(b' ');
+fn write_fixed_ts<W: Write>(w: &mut W, ts: i64) -> std::io::Result<()> {
+    let mut buf = [b'0'; TS_WIDTH];
+    let mut n = ts;
 
-    let bytes = text.as_bytes();
-    let end = if bytes.ends_with(b"\r") {
-        bytes.len() - 1
-    } else {
-        bytes.len()
-    };
+    let mut i = TS_WIDTH;
 
-    buf.extend_from_slice(&bytes[..end]);
-    buf.push(b'\n');
+    while n > 0 && i > 0 {
+        i -= 1;
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+
+    w.write_all(&buf)
 }
 
 #[inline(always)]
@@ -280,12 +192,9 @@ fn parse_hms(line: &[u8]) -> Option<(u32, u32, u32)> {
         return None;
     }
 
-    let h = (line[1].wrapping_sub(b'0') as u32) * 10
-        + line[2].wrapping_sub(b'0') as u32;
-    let m = (line[4].wrapping_sub(b'0') as u32) * 10
-        + line[5].wrapping_sub(b'0') as u32;
-    let s = (line[7].wrapping_sub(b'0') as u32) * 10
-        + line[8].wrapping_sub(b'0') as u32;
+    let h = (line[1] - b'0') as u32 * 10 + (line[2] - b'0') as u32;
+    let m = (line[4] - b'0') as u32 * 10 + (line[5] - b'0') as u32;
+    let s = (line[7] - b'0') as u32 * 10 + (line[8] - b'0') as u32;
 
     if h < 24 && m < 60 && s < 60 {
         Some((h, m, s))
@@ -306,12 +215,9 @@ fn parse_hms_long(line: &[u8]) -> Option<(u32, u32, u32)> {
         return None;
     }
 
-    let h = (line[i + 1].wrapping_sub(b'0') as u32) * 10
-        + line[i + 2].wrapping_sub(b'0') as u32;
-    let m = (line[i + 4].wrapping_sub(b'0') as u32) * 10
-        + line[i + 5].wrapping_sub(b'0') as u32;
-    let s = (line[i + 7].wrapping_sub(b'0') as u32) * 10
-        + line[i + 8].wrapping_sub(b'0') as u32;
+    let h = (line[i + 1] - b'0') as u32 * 10 + (line[i + 2] - b'0') as u32;
+    let m = (line[i + 4] - b'0') as u32 * 10 + (line[i + 5] - b'0') as u32;
+    let s = (line[i + 7] - b'0') as u32 * 10 + (line[i + 8] - b'0') as u32;
 
     if h < 24 && m < 60 && s < 60 {
         Some((h, m, s))
