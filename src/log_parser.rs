@@ -13,6 +13,7 @@ const BUF_SIZE: usize = 256 * 1024;
 use indicatif::ProgressBar;
 use std::sync::Arc;
 
+
 pub fn parse_logs(
     files: Vec<String>,
     pb: Arc<ProgressBar>,

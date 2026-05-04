@@ -1,89 +1,67 @@
-use std::env;
-use std::fs::File;
-use std::io::{BufWriter, Write};
+use clap::{Parser, Subcommand};
+// use indicatif::{ProgressBar, ProgressStyle};
+// use std::sync::Arc;
 
-use indicatif::{ProgressBar, ProgressStyle};
-use std::sync::Arc;
 
-mod log_parser;
-mod get_logfiles;
 mod create_base;
+mod get_logfiles;
+mod log_parser;
+mod tools;
+mod zip_writer;
 
-const TS_WIDTH: usize = 12;
-
-fn main() -> std::io::Result<()> {
-    let args: Vec<String> = env::args().collect();
-
-    if args.len() < 2 {
-        eprintln!("Usage: {} <command> <arguments>", args[0]);
-        return Ok(());
-    }
-
-    let command = &args[1];
-
-    if command == "cb" {
-        if args.len() >= 3 {
-            let path = &args[2];
-
-            let files = match get_logfiles::find_log_gz_files(&path) {
-                Ok(files) => files,
-                Err(e) => {
-                    eprintln!("Error finding log files in '{}': {}", path, e);
-                    return Err(e);
-                }
-            };
-
-            let pb = Arc::new(ProgressBar::new(files.len() as u64));
-
-            pb.set_style(
-                ProgressStyle::default_bar()
-                    .template("[{elapsed_precise}] {wide_bar} {pos}/{len} ({eta})")
-                    .unwrap(),
-            );
-
-            let logs = log_parser::parse_logs(files, pb.clone())?;
-
-            // 🔥 запись в файл
-            let out_file = File::create("output.txt")?;
-            let mut writer = BufWriter::with_capacity(1024 * 1024, out_file);
-
-            for (ts, msg) in logs {
-                write_fixed_ts(&mut writer, ts)?;
-                writer.write_all(b" ")?;
-                writer.write_all(msg.as_bytes())?;
-                writer.write_all(b"\n")?;
-            }
-
-            writer.flush()?;
-
-            println!("Done. Output written to output.txt");
-
-            return Ok(());
-        } else {
-            eprintln!("Usage: {} cb <path>", args[0]);
-            return Ok(());
-        }
-    }
-
-    Ok(())
+#[derive(Parser)]
+#[command(name = "lt3", version = "1.0", about = "MC Log-tools")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
 }
 
-// =============================
-// helper: фиксированный unix
-// =============================
+#[derive(Subcommand)]
+enum Commands {
+    #[command(aliases = ["cb", "create"])]
+    CreateBase {
+        #[arg(required = true, value_name = "PATH")]
+        paths: Vec<String>,
 
-#[inline(always)]
-fn write_fixed_ts<W: Write>(w: &mut W, ts: i64) -> std::io::Result<()> {
-    let mut buf = [b'0'; TS_WIDTH];
-    let mut n = ts;
-
-    let mut i = TS_WIDTH;
-
-    while n > 0 && i > 0 {
-        i -= 1;
-        buf[i] = b'0' + (n % 10) as u8;
-        n /= 10;
+        #[arg(value_name = "NAME")]
+        name: String,
     }
 
-    w.write_all(&buf)
+
+    //#[command(aliases = ["s", "find"])]
+    //Search {
+    //    #[arg(value_name = "BASE")]
+    //    base: String,
+
+    //    #[arg(value_name = "SEARCH TEXT")]
+    //    text: String,
+    //},
+}
+
+fn main() {
+    let cli = Cli::parse();
+
+    match cli.command {
+
+        Commands::CreateBase { paths, name } => {
+
+            if paths.len() > 0 {
+                if !name.is_empty() {
+
+                    match tools::validate_windows_filename(&name) {
+                        Ok(()) => {
+                           create_base::create_base(paths, name);
+                        }
+                        Err(e) => {
+                            println!("\n{}", tools::format_filename_error(&name, &e));
+                        }
+                    }
+
+                    //
+                } else { }
+            } else { }
+        }
+
+        //Commands::Search { base, text } => { }
+    }
 }

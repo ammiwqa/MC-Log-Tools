@@ -10,3 +10,7 @@ encoding_rs = "0.8"
 memchr = "2"
 num_cpus = "1"
 indicatif = "0.18.4"
+clap = { version = "4.6.1", features = ["derive"] }
+thiserror = "2.0.18"
+serde_json = "1.0.149"
+zstd = { version = "0.13", features = ["zstdmt"] }
