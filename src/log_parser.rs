@@ -10,10 +10,21 @@ use memchr::{memchr, memmem};
 const BUF_SIZE: usize = 256 * 1024;
 
 
-pub fn parse_logs(files: Vec<String>) -> std::io::Result<Vec<(i64, String)>> {
+use indicatif::ProgressBar;
+use std::sync::Arc;
+
+pub fn parse_logs(
+    files: Vec<String>,
+    pb: Arc<ProgressBar>,
+) -> std::io::Result<Vec<(i64, String)>> {
+
     let results: Vec<_> = files
         .par_iter()
-        .map(|f| process_file(f))
+        .map(|f| {
+            let res = process_file(f);
+            pb.inc(1);
+            res
+        })
         .collect();
 
     let mut all = Vec::new();
@@ -23,10 +34,10 @@ pub fn parse_logs(files: Vec<String>) -> std::io::Result<Vec<(i64, String)>> {
             all.append(&mut v);
         }
     }
-    
+
     // UNIX sort
     all.sort_unstable_by_key(|x| x.0);
-
+    
     Ok(all)
 }
 
@@ -92,7 +103,7 @@ fn process_buffer(
             if memchr(b'H', line).is_none() {
                 continue;
             }
-            
+
             let msg_bytes = match extract_chat_message(line) {
                 Some(m) => m,
                 None => continue,
@@ -110,7 +121,7 @@ fn process_buffer(
             };
 
             let unix_time = base_day * 86400 + (h * 3600 + m * 60 + s) as i64;
-            
+
             let text: std::borrow::Cow<str> = if *force_ansi {
                 WINDOWS_1251.decode(msg_bytes).0
             } else {
