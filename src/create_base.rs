@@ -1,8 +1,12 @@
 use std::sync::Arc;
+use std::env;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use serde_json::json;
 use std::fs;
+
+use console::{Style, style};
+use std::path::PathBuf;
 
 use crate::log_parser;
 use crate::get_logfiles;
@@ -28,16 +32,27 @@ pub fn create_base(
         all_logs.extend(np);
     }
 
-    let pb = Arc::new(ProgressBar::new(all_logs.len() as u64));
+    let all_logs_len = all_logs.len();
+
+    let bright_cyan_style = Style::new().cyan().bold();
+    let pb = Arc::new(ProgressBar::new(all_logs_len as u64));
 
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {wide_bar} {pos}/{len} ({eta})")
-            .unwrap(),
+            .template("   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}] {msg:.white}")
+            .unwrap()
+            .progress_chars("=>-"),
     );
 
-    let logs = log_parser::parse_logs(all_logs, pb).unwrap();
+    pb.set_prefix(format!("{}", bright_cyan_style.apply_to("Parsing")));
+
+    let logs = log_parser::parse_logs(all_logs, &pb).unwrap();
     let lines = logs.len();
+
+    pb.finish_and_clear();
+
+    let success_msg = style("   Parsing").green().bold();
+    println!("{} {} files -> {} lines", success_msg, all_logs_len, lines);
 
     let json_value = json!({
         "name":   name,
@@ -57,7 +72,35 @@ pub fn create_base(
         "paths": paths_json
     });
 
-    fs::write("data.json", serde_json::to_string_pretty(&json_value).unwrap()).unwrap();
 
-    let _ = zip_writer::write_logs_to_zstd(&logs, "output.log.gz");
+    let appdata = env::var("APPDATA").expect("No APPDATA env variable");
+    let mut base_path = PathBuf::from(appdata);
+    base_path.push("LogTools3");
+    base_path.push("bases");
+    base_path.push(&name);
+    fs::create_dir_all(&base_path).unwrap();
+
+
+    let file_path = base_path.join(format!("{}.json", &name));
+    fs::write(file_path, serde_json::to_string_pretty(&json_value).unwrap()).unwrap();
+
+
+    let pb2 = Arc::new(ProgressBar::new(logs.len() as u64));
+
+    pb2.set_style(
+        ProgressStyle::default_bar()
+            .template("   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}] {msg:.white}")
+            .unwrap()
+            .progress_chars("=>-"),
+    );
+    pb2.set_prefix(format!("{}", bright_cyan_style.apply_to("Writing")));
+
+
+
+    let file_path = base_path.join(format!("{}.log.gz", &name)).display().to_string();
+    let _ = zip_writer::write_logs_to_zstd(&logs, &file_path, pb2);
+
+    pb.finish_and_clear();
+    let success_msg = style("   Writing").green().bold();
+    println!("{} {} lines -> {}", success_msg, lines, name);
 }

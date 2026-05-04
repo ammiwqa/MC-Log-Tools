@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 pub fn parse_logs(
     files: Vec<String>,
-    pb: Arc<ProgressBar>,
+    pb: &Arc<ProgressBar>,
 ) -> std::io::Result<Vec<(i64, String)>> {
 
     let results: Vec<_> = files
@@ -38,7 +38,7 @@ pub fn parse_logs(
 
     // UNIX sort
     all.sort_unstable_by_key(|x| x.0);
-    
+
     Ok(all)
 }
 

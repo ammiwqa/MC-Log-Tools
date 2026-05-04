@@ -1,5 +1,7 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use std::sync::Arc;
+use indicatif::ProgressBar;
 use zstd::stream::write::Encoder;
 
 const TS_WIDTH: usize = 12;
@@ -8,6 +10,7 @@ const OUT_BUF_SIZE: usize = 16 * 1024 * 1024;
 pub fn write_logs_to_zstd(
     logs: &[(i64, String)],
     path: &str,
+    pb: Arc<ProgressBar>
 ) -> std::io::Result<()> {
     let file = File::create(path)?;
 
@@ -22,6 +25,7 @@ pub fn write_logs_to_zstd(
     let mut local_buf = Vec::with_capacity(OUT_BUF_SIZE);
 
     for (ts, msg) in logs {
+        pb.inc(1);
         write_fixed_ts(&mut local_buf, *ts);
         local_buf.push(b' ');
         local_buf.extend_from_slice(msg.as_bytes());

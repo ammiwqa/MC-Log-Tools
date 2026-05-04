@@ -9,6 +9,7 @@ mod log_parser;
 mod tools;
 mod zip_writer;
 
+
 #[derive(Parser)]
 #[command(name = "lt3", version = "1.0", about = "MC Log-tools")]
 struct Cli {

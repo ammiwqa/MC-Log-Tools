@@ -3,6 +3,16 @@ name = "LogTools3"
 version = "0.1.0"
 edition = "2024"
 
+[profile.dev]
+opt-level = 1
+debug = true
+incremental = true
+
+[profile.dev-fast]
+inherits = "release"
+lto = false
+debug = true
+
 [dependencies]
 flate2 = { version = "1.0", features = ["zlib-ng"] }
 rayon = "1.8"
@@ -14,3 +24,4 @@ clap = { version = "4.6.1", features = ["derive"] }
 thiserror = "2.0.18"
 serde_json = "1.0.149"
 zstd = { version = "0.13", features = ["zstdmt"] }
+console = "0.16.3"
