@@ -155,9 +155,7 @@ pub fn process_file_plain(
         .unwrap()
         .to_string_lossy();
 
-
-
-    let (y, m, d) = parse_file_date(&filename);
+    
     let base_day = tools::file_modified_days_local(file_path)?;
 
     let mut force_ansi = false;

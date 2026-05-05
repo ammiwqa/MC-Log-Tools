@@ -1,6 +1,6 @@
 use thiserror::Error;
 use std::fs;
-use chrono::{DateTime, Local, Datelike};
+use chrono::{DateTime, Local};
 
 #[derive(Error, Debug, PartialEq)]
 pub enum FilenameError {
@@ -87,8 +87,8 @@ pub fn file_modified_days_local(path: &str) -> std::io::Result<i64> {
     let modified = metadata.modified()?;
 
     let dt: DateTime<Local> = modified.into();
-    
+
     let date = dt.date_naive();
-    
+
     Ok(date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp() / 86_400)
 }
