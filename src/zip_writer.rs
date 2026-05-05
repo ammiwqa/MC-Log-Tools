@@ -10,7 +10,7 @@ const OUT_BUF_SIZE: usize = 16 * 1024 * 1024;
 pub fn write_logs_to_zstd(
     logs: &[(i64, String)],
     path: &str,
-    pb: Arc<ProgressBar>
+    pb: &Arc<ProgressBar>
 ) -> std::io::Result<()> {
     let file = File::create(path)?;
 

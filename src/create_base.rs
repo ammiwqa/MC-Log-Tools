@@ -116,22 +116,22 @@ pub fn create_base(
     fs::write(file_path, serde_json::to_string_pretty(&json_value).unwrap()).unwrap();
 
 
-    let pb2 = Arc::new(ProgressBar::new(logs.len() as u64));
+    let pb_writing = Arc::new(ProgressBar::new(logs.len() as u64));
 
-    pb2.set_style(
+    pb_writing.set_style(
         ProgressStyle::default_bar()
             .template("   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}] {msg:.white}")
             .unwrap()
             .progress_chars("=>-"),
     );
-    pb2.set_prefix(format!("{}", bright_cyan_style.apply_to("Writing")));
+    pb_writing.set_prefix(format!("{}", bright_cyan_style.apply_to("Writing")));
 
 
 
     let file_path = base_path.join(format!("{}.log.gz", &name)).display().to_string();
-    let _ = zip_writer::write_logs_to_zstd(&logs, &file_path, pb2);
+    let _ = zip_writer::write_logs_to_zstd(&logs, &file_path, &pb_writing);
 
-    pb.finish_and_clear();
+    pb_writing.finish_and_clear();
     let success_msg = style("   Writing").green().bold();
     println!("{} {} lines -> {}", success_msg, lines, name);
 }

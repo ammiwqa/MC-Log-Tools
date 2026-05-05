@@ -150,12 +150,6 @@ pub fn process_file_plain(
     let file = File::open(file_path)?;
     let reader = BufReader::with_capacity(BUF_SIZE, file);
 
-    let filename = Path::new(file_path)
-        .file_name()
-        .unwrap()
-        .to_string_lossy();
-
-    
     let base_day = tools::file_modified_days_local(file_path)?;
 
     let mut force_ansi = false;
