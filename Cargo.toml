@@ -1,30 +1,11 @@
-[package]
-name = "LogTools3"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+members = [
+    "crates/cli",
+    "crates/base/get_logfiles",
+    "crates/tools",
+    "crates/base/zip_writer",
 
-[profile.dev]
-opt-level = 1
-debug = true
-incremental = true
-
-[profile.dev-fast]
-inherits = "release"
-lto = false
-debug = true
-
-[dependencies]
-flate2 = { version = "1.0", features = ["zlib-ng"] }
-rayon = "1.8"
-encoding_rs = "0.8"
-memchr = "2"
-num_cpus = "1"
-indicatif = "0.18.4"
-clap = { version = "4.6.1", features = ["derive"] }
-thiserror = "2.0.18"
-serde_json = "1.0.149"
-zstd = { version = "0.13", features = ["zstdmt"] }
-console = "0.16.3"
-sha2 = "0.11.0"
-hex = "0.4.3"
-chrono = "0.4.44"
+    "crates/base/create_base",
+    "crates/base/log_parser",
+]
+resolver = "2"
