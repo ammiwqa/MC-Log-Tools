@@ -1,191 +1,87 @@
 use flate2::read::GzDecoder;
 use rayon::prelude::*;
 use std::fs::File;
-use std::io::{BufReader, BufRead, Read};
+use std::io::{BufReader, Read};
 use std::path::Path;
 use sha2::{Sha256, Digest};
+
+use crate::tools;
+
+use hex::encode;
+
+
 use encoding_rs::WINDOWS_1251;
 use memchr::{memchr, memmem};
-use indicatif::ProgressBar;
-use std::sync::Arc;
-use std::collections::HashMap;
-
-
-
 
 const BUF_SIZE: usize = 256 * 1024;
 
-type PlainInput = HashMap<String, usize>;
 
-#[derive(Clone, Debug)]
-pub struct FileMeta {
-    path: String,
-    line: usize,
-    hash: String,
-}
+use indicatif::ProgressBar;
+use std::sync::Arc;
 
-enum Processed {
-    Gz {
-        path: String,
-        data: Vec<(i64, String)>,
-    },
-    Plain {
-        path: String,
-        data: Vec<(i64, String)>,
-        line: usize,
-        hash: String,
-    },
-}
 
-// =======================================================
-// PARSE LOGS
-// =======================================================
 pub fn parse_logs(
     files: Vec<String>,
-    plain_map: PlainInput,
     pb: &Arc<ProgressBar>,
-) -> std::io::Result<(Vec<(i64, String)>, Vec<FileMeta>)> {
+) -> std::io::Result<Vec<(i64, String)>> {
 
-    let results: std::io::Result<Vec<Processed>> = files
+    let results: Vec<_> = files
         .par_iter()
         .map(|f| {
-            let res = if f.ends_with(".log.gz") {
-                process_file_gz(f)
-            } else if f.ends_with(".log") {
-                let start_line = 0; // временно
-
-                process_file_plain(f, start_line)
-            } else {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("Unsupported file type: {}", f),
-                ));
-            };
-
+            let res = process_file_gz(f);
             pb.inc(1);
             res
         })
         .collect();
 
-    let results = results?;
+    let mut all = Vec::new();
+
+    for res in results {
+        if let Ok(mut v) = res {
+            all.append(&mut v);
+        }
+    }
+
+    // UNIX sort
+    //all.sort_unstable_by_key(|x| x.0);
+
+    Ok(all)
+}
+
+
+pub fn parse_latest(
+    latest: Vec<(String, usize)>,
+    pb: &Arc<ProgressBar>
+) -> std::io::Result<(
+    Vec<(i64, String)>,
+    Vec<(String, usize, String)>
+)> {
+
+    let results: Vec<_> = latest
+        .par_iter()
+        .map(|(file, value)| {
+            let res = process_file_plain(file, *value)
+                .map(|(result, line, hash)| {
+                    (file.clone(), result, line, hash)
+                });
+
+            pb.inc(1); // <-- вот здесь
+            res
+        })
+        .collect();
 
     let mut all = Vec::new();
-    let mut latest = Vec::new();
+    let mut meta = Vec::new();
 
-    for r in results {
-        match r {
-            Processed::Gz { path: _, mut data } => {
-                all.append(&mut data);
-            }
-
-            Processed::Plain { path, data, line, hash } => {
-                all.extend(data);
-
-                latest.push(FileMeta {
-                    path,
-                    line,
-                    hash,
-                });
-            }
+    for res in results {
+        if let Ok((path, mut result, line, hash)) = res {
+            all.append(&mut result);
+            meta.push((path, line, hash));
         }
     }
 
-    all.sort_unstable_by_key(|x| x.0);
-
-    // DEBUG OUTPUT
-    for item in &latest {
-        println!(
-            "{:<40} {:<6} {}",
-            item.path,
-            item.line,
-            item.hash
-        );
-    }
-
-    println!("latest count: {}", latest.len());
-
-    Ok((all, latest))
+    Ok((all, meta))
 }
-
-// =======================================================
-// GZ PROCESSING
-// =======================================================
-pub fn process_file_gz(file_path: &str) -> std::io::Result<Processed> {
-    let file = File::open(file_path)?;
-    let decoder = GzDecoder::new(file);
-    let reader = BufReader::with_capacity(BUF_SIZE, decoder);
-
-    let filename = Path::new(file_path)
-        .file_name()
-        .unwrap()
-        .to_string_lossy();
-
-    let (y, m, d) = parse_file_date(&filename);
-    let base_day = to_unix_days(y, m, d);
-
-    let mut force_ansi = false;
-
-    let data = process_reader(reader, base_day, &mut force_ansi)?;
-
-    Ok(Processed::Gz {
-        path: file_path.to_string(),
-        data,
-    })
-}
-
-// =======================================================
-// PLAIN PROCESSING
-// =======================================================
-pub fn process_file_plain(
-    file_path: &str,
-    start_line: usize,
-) -> std::io::Result<Processed> {
-
-    let file_bytes = std::fs::read(file_path)?;
-    let mut hasher = Sha256::new();
-    hasher.update(&file_bytes);
-    let hash = format!("{:x}", hasher.finalize());
-
-    let file = File::open(file_path)?;
-    let mut reader = BufReader::with_capacity(BUF_SIZE, file);
-
-    let filename = Path::new(file_path)
-        .file_name()
-        .unwrap()
-        .to_string_lossy();
-
-    let (y, m, d) = parse_file_date(&filename);
-    let base_day = to_unix_days(y, m, d);
-
-    let mut force_ansi = false;
-
-    let mut line = String::new();
-    let mut current = 0;
-
-    for _ in 0..start_line {
-        if reader.read_line(&mut line)? == 0 {
-            return Ok(Processed::Plain {
-                path: file_path.to_string(),
-                data: vec![],
-                line: current,
-                hash,
-            });
-        }
-        current += 1;
-        line.clear();
-    }
-
-    let data = process_reader(reader, base_day, &mut force_ansi)?;
-
-    Ok(Processed::Plain {
-        path: file_path.to_string(),
-        data,
-        line: start_line,
-        hash,
-    })
-}
-
-
 
 pub fn process_reader<R: Read>(
     mut reader: BufReader<R>,
@@ -223,6 +119,61 @@ pub fn process_reader<R: Read>(
     Ok(result)
 }
 
+pub fn process_file_gz(file_path: &str) -> std::io::Result<Vec<(i64, String)>> {
+    let file = File::open(file_path)?;
+    let decoder = GzDecoder::new(file);
+    let reader = BufReader::with_capacity(BUF_SIZE, decoder);
+
+    let filename = Path::new(file_path)
+        .file_name()
+        .unwrap()
+        .to_string_lossy();
+
+    let (y, m, d) = parse_file_date(&filename);
+    let base_day = to_unix_days(y, m, d);
+
+    let mut force_ansi = false;
+
+    process_reader(reader, base_day, &mut force_ansi)
+}
+
+pub fn process_file_plain(
+    file_path: &str,
+    start_line: usize,
+) -> std::io::Result<(Vec<(i64, String)>, usize, String)> {
+
+    let file_bytes = std::fs::read(file_path)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&file_bytes);
+    let file_hash = encode(hasher.finalize());
+
+    let file = File::open(file_path)?;
+    let reader = BufReader::with_capacity(BUF_SIZE, file);
+
+    let filename = Path::new(file_path)
+        .file_name()
+        .unwrap()
+        .to_string_lossy();
+
+
+
+    let (y, m, d) = parse_file_date(&filename);
+    let base_day = tools::file_modified_days_local(file_path)?;
+
+    let mut force_ansi = false;
+
+    let mut result = process_reader(reader, base_day, &mut force_ansi)?;
+
+    let total_lines = result.len();
+
+    if start_line >= total_lines {
+        return Ok((Vec::new(), total_lines, file_hash));
+    }
+
+    result.drain(0..start_line);
+
+    Ok((result, total_lines, file_hash))
+}
 
 #[inline(always)]
 fn process_buffer(

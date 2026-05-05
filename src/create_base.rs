@@ -8,8 +8,6 @@ use std::fs;
 use console::{Style, style};
 use std::path::PathBuf;
 
-use std::collections::HashMap;
-
 use crate::log_parser;
 use crate::get_logfiles;
 use crate::zip_writer;
@@ -23,12 +21,18 @@ pub fn create_base(
 
     let mut all_logs: Vec<String> = Vec::new();
     let mut paths_json: Vec<serde_json::Value> = Vec::new();
+    let mut latest_params: Vec<(String, usize)> = Vec::new();
 
     for path in &paths {
-        let np = get_logfiles::find_log_gz_files(path, true).unwrap();
-        let np_short_list = get_logfiles::find_log_gz_files(path, false).unwrap();
+        let np = get_logfiles::find_log_files(path, true, ".log.gz".to_string()).unwrap();
+        let np_short_list = get_logfiles::find_log_files(path, false, ".log.gz".to_string()).unwrap();
 
         let json_path = json!({path: {"latest": [{"hash": "", "last_line": "",}], "files": np_short_list}});
+
+        let files = get_logfiles::find_log_files(path, true, ".log".to_string()).unwrap();
+        latest_params.extend(
+            files.into_iter().map(|f| (f, 0))
+        );
 
         paths_json.push(json_path);
         all_logs.extend(np);
@@ -37,31 +41,49 @@ pub fn create_base(
     let all_logs_len = all_logs.len();
 
     let bright_cyan_style = Style::new().cyan().bold();
-    let pb = Arc::new(ProgressBar::new(all_logs_len as u64));
 
+    let pb = Arc::new(ProgressBar::new(all_logs_len as u64));
     pb.set_style(
         ProgressStyle::default_bar()
             .template("   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}] {msg:.white}")
             .unwrap()
             .progress_chars("=>-"),
     );
-
     pb.set_prefix(format!("{}", bright_cyan_style.apply_to("Parsing")));
 
-
-    let plain_map: HashMap<String, usize> = vec![
-        (r"D:\Data\blcMC\.minecraft\logs\blclient\minecraft\latest.log".to_string(), 0),
-    ].into_iter().collect();
-
-    let (logs, latest) = log_parser::parse_logs(all_logs, plain_map, &pb).unwrap();
-
-
-    let lines = logs.len();
+    let mut logs = log_parser::parse_logs(all_logs, &pb).unwrap();
 
     pb.finish_and_clear();
 
+    let lines_first = logs.len();
     let success_msg = style("   Parsing").green().bold();
-    println!("{} {} files -> {} lines", success_msg, all_logs_len, lines);
+    println!("{} {} files -> {} lines", success_msg, all_logs_len, lines_first);
+
+
+    let latest_params_len =  latest_params.len();
+    let pb_latest = Arc::new(ProgressBar::new(latest_params_len as u64));
+    pb_latest.set_style(
+        ProgressStyle::default_bar()
+            .template("   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}] {msg:.white}")
+            .unwrap()
+            .progress_chars("=>-"),
+    );
+    pb_latest.set_prefix(format!("{}", bright_cyan_style.apply_to("Parsing latest")));
+
+    let (logs_latest, _params) = log_parser::parse_latest(latest_params, &pb_latest).unwrap();
+    let lines_latest = logs_latest.len();
+
+    pb_latest.finish_and_clear();
+
+    let success_msg = style("   Parsing latest").green().bold();
+    println!("{} {} files -> {} lines", success_msg, latest_params_len, lines_latest);
+
+
+    logs.extend(logs_latest);
+    logs.sort_unstable_by_key(|x| x.0);
+
+    let lines = logs.len();
+
 
     let json_value = json!({
         "name":   name,
