@@ -3,6 +3,12 @@ use rayon::prelude::*;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
+use sha2::{Sha256, Digest};
+
+use crate::tools;
+
+use hex::encode;
+
 
 use encoding_rs::WINDOWS_1251;
 use memchr::{memchr, memmem};
@@ -22,7 +28,7 @@ pub fn parse_logs(
     let results: Vec<_> = files
         .par_iter()
         .map(|f| {
-            let res = process_file(f);
+            let res = process_file_gz(f);
             pb.inc(1);
             res
         })
@@ -37,26 +43,52 @@ pub fn parse_logs(
     }
 
     // UNIX sort
-    all.sort_unstable_by_key(|x| x.0);
+    //all.sort_unstable_by_key(|x| x.0);
 
     Ok(all)
 }
 
 
-fn process_file(file_path: &str) -> std::io::Result<Vec<(i64, String)>> {
-    let file = File::open(file_path)?;
-    let decoder = GzDecoder::new(file);
-    let mut reader = BufReader::with_capacity(BUF_SIZE, decoder);
+pub fn parse_latest(
+    latest: Vec<(String, usize)>,
+    pb: &Arc<ProgressBar>
+) -> std::io::Result<(
+    Vec<(i64, String)>,
+    Vec<(String, usize, String)>
+)> {
 
-    let filename = Path::new(file_path)
-        .file_name()
-        .unwrap()
-        .to_string_lossy();
+    let results: Vec<_> = latest
+        .par_iter()
+        .map(|(file, value)| {
+            let res = process_file_plain(file, *value)
+                .map(|(result, line, hash)| {
+                    (file.clone(), result, line, hash)
+                });
 
-    let (y, m, d) = parse_file_date(&filename);
-    let base_day = to_unix_days(y, m, d);
+            pb.inc(1); // <-- вот здесь
+            res
+        })
+        .collect();
 
-    let mut force_ansi = false;
+    let mut all = Vec::new();
+    let mut meta = Vec::new();
+
+    for res in results {
+        if let Ok((path, mut result, line, hash)) = res {
+            all.append(&mut result);
+            meta.push((path, line, hash));
+        }
+    }
+
+    Ok((all, meta))
+}
+
+pub fn process_reader<R: Read>(
+    mut reader: BufReader<R>,
+    base_day: i64,
+    force_ansi: &mut bool,
+) -> std::io::Result<Vec<(i64, String)>> {
+
     let mut result = Vec::with_capacity(10000);
 
     let mut buf = vec![0u8; BUF_SIZE];
@@ -72,10 +104,10 @@ fn process_file(file_path: &str) -> std::io::Result<Vec<(i64, String)>> {
 
         if !leftover.is_empty() {
             leftover.extend_from_slice(data);
-            process_buffer(&leftover, base_day, &mut force_ansi, &mut result);
+            process_buffer(&leftover, base_day, force_ansi, &mut result);
             leftover.clear();
         } else {
-            process_buffer(data, base_day, &mut force_ansi, &mut result);
+            process_buffer(data, base_day, force_ansi, &mut result);
         }
 
         if let Some(pos) = data.iter().rposition(|&b| b == b'\n') {
@@ -85,6 +117,75 @@ fn process_file(file_path: &str) -> std::io::Result<Vec<(i64, String)>> {
     }
 
     Ok(result)
+}
+
+pub fn process_file_gz(file_path: &str) -> std::io::Result<Vec<(i64, String)>> {
+    let file = File::open(file_path)?;
+    let decoder = GzDecoder::new(file);
+    let reader = BufReader::with_capacity(BUF_SIZE, decoder);
+
+    let filename = Path::new(file_path)
+        .file_name()
+        .unwrap()
+        .to_string_lossy();
+
+    let (y, m, d) = parse_file_date(&filename);
+    let base_day = to_unix_days(y, m, d);
+
+    let mut force_ansi = false;
+
+    process_reader(reader, base_day, &mut force_ansi)
+}
+
+pub fn process_file_plain(
+    file_path: &str,
+    start_line: usize,
+) -> std::io::Result<(Vec<(i64, String)>, usize, String)> {
+
+    // -------------------------
+    // 1. считаем хеш файла
+    // -------------------------
+    let file_bytes = std::fs::read(file_path)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&file_bytes);
+    let file_hash = encode(hasher.finalize());
+
+    // -------------------------
+    // 2. открываем файл
+    // -------------------------
+    let file = File::open(file_path)?;
+    let reader = BufReader::with_capacity(BUF_SIZE, file);
+
+    let filename = Path::new(file_path)
+        .file_name()
+        .unwrap()
+        .to_string_lossy();
+
+
+
+    let (y, m, d) = parse_file_date(&filename);
+    let base_day = tools::file_modified_days_local(file_path)?;
+
+    let mut force_ansi = false;
+
+    // -------------------------
+    // 3. парсим через process_reader
+    // -------------------------
+    let mut result = process_reader(reader, base_day, &mut force_ansi)?;
+
+    // -------------------------
+    // 4. применяем start_line
+    // -------------------------
+    let total_lines = result.len();
+
+    if start_line >= total_lines {
+        return Ok((Vec::new(), total_lines, file_hash));
+    }
+
+    // отрезаем уже обработанные строки
+    result.drain(0..start_line);
+
+    Ok((result, total_lines, file_hash))
 }
 
 #[inline(always)]

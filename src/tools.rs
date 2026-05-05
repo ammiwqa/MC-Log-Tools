@@ -1,4 +1,6 @@
 use thiserror::Error;
+use std::fs;
+use chrono::{DateTime, Local, Datelike};
 
 #[derive(Error, Debug, PartialEq)]
 pub enum FilenameError {
@@ -78,4 +80,17 @@ pub fn format_filename_error(filename: &str, error: &FilenameError) -> String {
             format!("DB name is too long ({} characters).\n\
 					Maximum length: {} characters", actual, max),
     }
+}
+
+pub fn file_modified_days_local(path: &str) -> std::io::Result<i64> {
+    let metadata = fs::metadata(path)?;
+    let modified = metadata.modified()?;
+
+    let dt: DateTime<Local> = modified.into();
+
+    // обрезаем до полуночи локального времени
+    let date = dt.date_naive();
+
+    // переводим в unix days
+    Ok(date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp() / 86_400)
 }

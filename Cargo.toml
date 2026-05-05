@@ -25,3 +25,6 @@ thiserror = "2.0.18"
 serde_json = "1.0.149"
 zstd = { version = "0.13", features = ["zstdmt"] }
 console = "0.16.3"
+sha2 = "0.11.0"
+hex = "0.4.3"
+chrono = "0.4.44"

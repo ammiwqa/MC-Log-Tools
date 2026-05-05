@@ -6,10 +6,9 @@ use std::path::Path;
 /// # ARGS
 /// * `dir_path` - путь к директории для поиска
 
-pub fn find_log_gz_files(dir_path: &str, full_path: bool) -> Result<Vec<String>, std::io::Error> {
+pub fn find_log_files(dir_path: &str, full_path: bool, end: String) -> Result<Vec<String>, std::io::Error> {
     let path = Path::new(dir_path);
 
-    // Проверяем, существует ли директория
     if !path.is_dir() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -26,7 +25,7 @@ pub fn find_log_gz_files(dir_path: &str, full_path: bool) -> Result<Vec<String>,
         if file_path.is_file() {
             if let Some(file_name) = file_path.file_name() {
                 let file_name_str = file_name.to_string_lossy();
-                if file_name_str.ends_with(".log.gz") {
+                if file_name_str.ends_with(&end) {
                     if full_path {
                         if let Some(path_str) = file_path.to_str() {
                             result.push(path_str.to_string());
