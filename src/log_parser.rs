@@ -1,52 +1,119 @@
 use flate2::read::GzDecoder;
 use rayon::prelude::*;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, BufRead, Read};
 use std::path::Path;
-
+use sha2::{Sha256, Digest};
 use encoding_rs::WINDOWS_1251;
 use memchr::{memchr, memmem};
+use indicatif::ProgressBar;
+use std::sync::Arc;
+use std::collections::HashMap;
+
+
+
 
 const BUF_SIZE: usize = 256 * 1024;
 
+type PlainInput = HashMap<String, usize>;
 
-use indicatif::ProgressBar;
-use std::sync::Arc;
+#[derive(Clone, Debug)]
+pub struct FileMeta {
+    path: String,
+    line: usize,
+    hash: String,
+}
 
+enum Processed {
+    Gz {
+        path: String,
+        data: Vec<(i64, String)>,
+    },
+    Plain {
+        path: String,
+        data: Vec<(i64, String)>,
+        line: usize,
+        hash: String,
+    },
+}
 
+// =======================================================
+// PARSE LOGS
+// =======================================================
 pub fn parse_logs(
     files: Vec<String>,
+    plain_map: PlainInput,
     pb: &Arc<ProgressBar>,
-) -> std::io::Result<Vec<(i64, String)>> {
+) -> std::io::Result<(Vec<(i64, String)>, Vec<FileMeta>)> {
 
-    let results: Vec<_> = files
+    let results: std::io::Result<Vec<Processed>> = files
         .par_iter()
         .map(|f| {
-            let res = process_file(f);
+            let res = if f.ends_with(".log.gz") {
+                process_file_gz(f)
+            } else if f.ends_with(".log") {
+                let start_line = 0; // временно
+
+                process_file_plain(f, start_line)
+            } else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("Unsupported file type: {}", f),
+                ));
+            };
+
             pb.inc(1);
             res
         })
         .collect();
 
-    let mut all = Vec::new();
+    let results = results?;
 
-    for res in results {
-        if let Ok(mut v) = res {
-            all.append(&mut v);
+    let mut all = Vec::new();
+    let mut latest = Vec::new();
+
+    for r in results {
+        match r {
+            Processed::Gz { path: _, mut data } => {
+                all.append(&mut data);
+            }
+
+            Processed::Plain { path, data, line, hash } => {
+                all.extend(data);
+
+                latest.push(FileMeta {
+                    path,
+                    line,
+                    hash,
+                });
+            }
         }
     }
 
-    // UNIX sort
     all.sort_unstable_by_key(|x| x.0);
 
-    Ok(all)
+    // DEBUG OUTPUT
+    for item in &latest {
+        println!(
+            "{:<40} {:<6} {}",
+            item.path,
+            item.line,
+            item.hash
+        );
+    }
+
+    println!("latest count: {}", latest.len());
+
+    Ok((all, latest))
 }
 
-
-fn process_file(file_path: &str) -> std::io::Result<Vec<(i64, String)>> {
+// =======================================================
+// GZ PROCESSING
+// =======================================================
+pub fn process_file_gz(file_path: &str) -> std::io::Result<Processed> {
     let file = File::open(file_path)?;
     let decoder = GzDecoder::new(file);
-    let mut reader = BufReader::with_capacity(BUF_SIZE, decoder);
+    let reader = BufReader::with_capacity(BUF_SIZE, decoder);
 
     let filename = Path::new(file_path)
         .file_name()
@@ -57,6 +124,75 @@ fn process_file(file_path: &str) -> std::io::Result<Vec<(i64, String)>> {
     let base_day = to_unix_days(y, m, d);
 
     let mut force_ansi = false;
+
+    let data = process_reader(reader, base_day, &mut force_ansi)?;
+
+    Ok(Processed::Gz {
+        path: file_path.to_string(),
+        data,
+    })
+}
+
+// =======================================================
+// PLAIN PROCESSING
+// =======================================================
+pub fn process_file_plain(
+    file_path: &str,
+    start_line: usize,
+) -> std::io::Result<Processed> {
+
+    let file_bytes = std::fs::read(file_path)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&file_bytes);
+    let hash = format!("{:x}", hasher.finalize());
+
+    let file = File::open(file_path)?;
+    let mut reader = BufReader::with_capacity(BUF_SIZE, file);
+
+    let filename = Path::new(file_path)
+        .file_name()
+        .unwrap()
+        .to_string_lossy();
+
+    let (y, m, d) = parse_file_date(&filename);
+    let base_day = to_unix_days(y, m, d);
+
+    let mut force_ansi = false;
+
+    let mut line = String::new();
+    let mut current = 0;
+
+    for _ in 0..start_line {
+        if reader.read_line(&mut line)? == 0 {
+            return Ok(Processed::Plain {
+                path: file_path.to_string(),
+                data: vec![],
+                line: current,
+                hash,
+            });
+        }
+        current += 1;
+        line.clear();
+    }
+
+    let data = process_reader(reader, base_day, &mut force_ansi)?;
+
+    Ok(Processed::Plain {
+        path: file_path.to_string(),
+        data,
+        line: start_line,
+        hash,
+    })
+}
+
+
+
+pub fn process_reader<R: Read>(
+    mut reader: BufReader<R>,
+    base_day: i64,
+    force_ansi: &mut bool,
+) -> std::io::Result<Vec<(i64, String)>> {
+
     let mut result = Vec::with_capacity(10000);
 
     let mut buf = vec![0u8; BUF_SIZE];
@@ -72,10 +208,10 @@ fn process_file(file_path: &str) -> std::io::Result<Vec<(i64, String)>> {
 
         if !leftover.is_empty() {
             leftover.extend_from_slice(data);
-            process_buffer(&leftover, base_day, &mut force_ansi, &mut result);
+            process_buffer(&leftover, base_day, force_ansi, &mut result);
             leftover.clear();
         } else {
-            process_buffer(data, base_day, &mut force_ansi, &mut result);
+            process_buffer(data, base_day, force_ansi, &mut result);
         }
 
         if let Some(pos) = data.iter().rposition(|&b| b == b'\n') {
@@ -86,6 +222,7 @@ fn process_file(file_path: &str) -> std::io::Result<Vec<(i64, String)>> {
 
     Ok(result)
 }
+
 
 #[inline(always)]
 fn process_buffer(

@@ -8,6 +8,8 @@ use std::fs;
 use console::{Style, style};
 use std::path::PathBuf;
 
+use std::collections::HashMap;
+
 use crate::log_parser;
 use crate::get_logfiles;
 use crate::zip_writer;
@@ -46,7 +48,14 @@ pub fn create_base(
 
     pb.set_prefix(format!("{}", bright_cyan_style.apply_to("Parsing")));
 
-    let logs = log_parser::parse_logs(all_logs, &pb).unwrap();
+
+    let plain_map: HashMap<String, usize> = vec![
+        (r"D:\Data\blcMC\.minecraft\logs\blclient\minecraft\latest.log".to_string(), 0),
+    ].into_iter().collect();
+
+    let (logs, latest) = log_parser::parse_logs(all_logs, plain_map, &pb).unwrap();
+
+
     let lines = logs.len();
 
     pb.finish_and_clear();
