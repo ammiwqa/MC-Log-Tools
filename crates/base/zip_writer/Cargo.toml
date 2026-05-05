@@ -1,0 +1,9 @@
+[package]
+name = "zip_writer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+indicatif = "0.18.4"
+zstd = { version = "0.13", features = ["zstdmt"] }
+num_cpus = "1"
