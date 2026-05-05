@@ -34,16 +34,19 @@ pub fn create_base(
     let mut paths_json: Vec<serde_json::Value> = Vec::new();
     let mut latest_params: Vec<(String, usize)> = Vec::new();
 
+
+
+
     // =========================
-    // SNAPSHOT PHASE (ВАЖНО)
+    // SNAPSHOT FOR JSON
     // =========================
     let mut files_snapshot: HashMap<String, Vec<String>> = HashMap::new();
 
     for path in &paths {
-        let np = get_logfiles::find_log_files(path, true, ".log.gz".to_string()).unwrap();
-        let np_short_list = get_logfiles::find_log_files(path, false, ".log.gz".to_string()).unwrap();
+        let np = get_logfiles::find_log_files(path, true, ".log.gz", false).unwrap();
+        let np_short_list = get_logfiles::find_log_files(path, false, ".log.gz", false).unwrap();
 
-        let latest_files = get_logfiles::find_log_files(path, true, "latest.log".to_string()).unwrap();
+        let latest_files = get_logfiles::find_log_files(path, true, "latest.log", true).unwrap();
 
         files_snapshot.insert(path.clone(), np_short_list);
 
@@ -54,8 +57,11 @@ pub fn create_base(
 
     let all_logs_len = all_logs.len();
 
+
+
+
     // =========================
-    // PROGRESS BAR 1
+    // PROGRESS BAR (logs)
     // =========================
     let bright_cyan_style = Style::new().cyan().bold();
 
@@ -80,8 +86,11 @@ pub fn create_base(
         format_error_stats(&errors)
     );
 
+
+
+
     // =========================
-    // PROGRESS BAR 2
+    // PROGRESS BAR (latest logs)
     // =========================
     let latest_params_len = latest_params.len();
 
@@ -107,8 +116,11 @@ pub fn create_base(
         format_error_stats(&latest_errors)
     );
 
+
+
+
     // =========================
-    // GROUP latest (FIX: object, not array)
+    // latest json gen
     // =========================
     let mut latest_map: HashMap<String, serde_json::Value> = HashMap::new();
 
@@ -124,8 +136,11 @@ pub fn create_base(
         );
     }
 
+
+
+
     // =========================
-    // BUILD JSON (FIXED STRUCTURE)
+    // BUILD JSON
     // =========================
     for path in &paths {
         let latest = latest_map
@@ -145,6 +160,9 @@ pub fn create_base(
             }
         }));
     }
+
+
+
 
     // =========================
     // FINAL MERGE
@@ -172,8 +190,11 @@ pub fn create_base(
         "paths": paths_json
     });
 
+
+
+
     // =========================
-    // WRITE FILE
+    // WRITE LT3 BASE CONF
     // =========================
     let appdata = env::var("APPDATA").expect("No APPDATA env variable");
 
@@ -186,6 +207,9 @@ pub fn create_base(
 
     let file_path = base_path.join(format!("{}.json", &name));
     fs::write(file_path, serde_json::to_string_pretty(&json_value).unwrap()).unwrap();
+
+
+
 
     // =========================
     // WRITE LOGS

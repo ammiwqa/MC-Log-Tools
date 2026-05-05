@@ -187,7 +187,7 @@ pub fn process_file_plain(
 
     let (mut result, stats) = process_reader(reader, base_day, &mut force_ansi)?;
 
-    let total_lines = result.len();
+    let total_lines = std::fs::read_to_string(file_path)?.lines().count();
 
     if start_line >= total_lines {
         return Ok((Vec::new(), stats, total_lines, file_hash));
