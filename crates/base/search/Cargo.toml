@@ -1,0 +1,10 @@
+[package]
+name = "search"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zstd = "0.13"
+flate2 = "1.0"
+crossbeam-channel = "0.5"
+num_cpus = "1.16"

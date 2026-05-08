@@ -23,7 +23,17 @@ enum Commands {
 
         #[arg(required = true, value_name = "NAME")]
         name: String,
-    }
+    },
+
+    #[command(aliases = ["search", "find", "s"])]
+    Search {
+        #[arg(required = true, value_name = "BASE")]
+        base_name: String,
+    
+        #[arg(required = true, value_name = "TEXT")]
+        text: String,
+}
+    
 }
 
 fn read_paths_from_file<P: AsRef<Path>>(file_path: P) -> Result<Vec<String>, std::io::Error> {
@@ -70,6 +80,14 @@ fn main() {
             } else {
                 eprintln!("No paths");
                 std::process::exit(1);
+            }
+        }
+
+        Commands::Search { base_name, text } => {
+            if !base_name.is_empty() {
+                if !text.is_empty() {
+                    search::search(&base_name, &text);
+                }
             }
         }
     }

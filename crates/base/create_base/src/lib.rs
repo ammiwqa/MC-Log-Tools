@@ -1,13 +1,13 @@
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::env;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde_json::json;
+use std::collections::HashMap;
+use std::env;
 use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use log_parser::ErrorStats;
 use console::{Style, style};
+use log_parser::ErrorStats;
 
 fn format_error_stats(stats: &ErrorStats) -> String {
     match (stats.file_errors, stats.parse_errors) {
@@ -26,16 +26,10 @@ fn get_dir(path: &str) -> String {
         .to_string()
 }
 
-pub fn create_base(
-    paths: Vec<String>,
-    name: String,
-) {
+pub fn create_base(paths: Vec<String>, name: String) {
     let mut all_logs: Vec<String> = Vec::new();
     let mut paths_json: Vec<serde_json::Value> = Vec::new();
     let mut latest_params: Vec<(String, usize)> = Vec::new();
-
-
-
 
     // =========================
     // SNAPSHOT FOR JSON
@@ -57,9 +51,6 @@ pub fn create_base(
 
     let all_logs_len = all_logs.len();
 
-
-
-
     // =========================
     // PROGRESS BAR (logs)
     // =========================
@@ -68,7 +59,9 @@ pub fn create_base(
     let pb = Arc::new(ProgressBar::new(all_logs_len as u64));
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}] {msg:.white}")
+            .template(
+                "   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}] {msg:.white}",
+            )
             .unwrap()
             .progress_chars("=>-"),
     );
@@ -86,9 +79,6 @@ pub fn create_base(
         format_error_stats(&errors)
     );
 
-
-
-
     // =========================
     // PROGRESS BAR (latest logs)
     // =========================
@@ -97,7 +87,9 @@ pub fn create_base(
     let pb_latest = Arc::new(ProgressBar::new(latest_params_len as u64));
     pb_latest.set_style(
         ProgressStyle::default_bar()
-            .template("   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}] {msg:.white}")
+            .template(
+                "   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}] {msg:.white}",
+            )
             .unwrap()
             .progress_chars("=>-"),
     );
@@ -116,9 +108,6 @@ pub fn create_base(
         format_error_stats(&latest_errors)
     );
 
-
-
-
     // =========================
     // latest json gen
     // =========================
@@ -132,26 +121,17 @@ pub fn create_base(
             json!({
                 "hash": hash,
                 "last_line": lines
-            })
+            }),
         );
     }
-
-
-
 
     // =========================
     // BUILD JSON
     // =========================
     for path in &paths {
-        let latest = latest_map
-            .get(path)
-            .cloned()
-            .unwrap_or(json!({}));
+        let latest = latest_map.get(path).cloned().unwrap_or(json!({}));
 
-        let files = files_snapshot
-            .get(path)
-            .cloned()
-            .unwrap_or_default();
+        let files = files_snapshot.get(path).cloned().unwrap_or_default();
 
         paths_json.push(json!({
             path: {
@@ -160,9 +140,6 @@ pub fn create_base(
             }
         }));
     }
-
-
-
 
     // =========================
     // FINAL MERGE
@@ -190,9 +167,6 @@ pub fn create_base(
         "paths": paths_json
     });
 
-
-
-
     // =========================
     // WRITE LT3 BASE CONF
     // =========================
@@ -206,10 +180,11 @@ pub fn create_base(
     fs::create_dir_all(&base_path).unwrap();
 
     let file_path = base_path.join(format!("{}.json", &name));
-    fs::write(file_path, serde_json::to_string_pretty(&json_value).unwrap()).unwrap();
-
-
-
+    fs::write(
+        file_path,
+        serde_json::to_string_pretty(&json_value).unwrap(),
+    )
+    .unwrap();
 
     // =========================
     // WRITE LOGS
@@ -218,14 +193,19 @@ pub fn create_base(
 
     pb_writing.set_style(
         ProgressStyle::default_bar()
-            .template("   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}] {msg:.white}")
+            .template(
+                "   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}] {msg:.white}",
+            )
             .unwrap()
             .progress_chars("=>-"),
     );
 
     pb_writing.set_prefix(format!("{}", bright_cyan_style.apply_to("Writing")));
 
-    let file_path = base_path.join(format!("{}.log.gz", &name)).display().to_string();
+    let file_path = base_path
+        .join(format!("{}.log.zst", &name))
+        .display()
+        .to_string();
     let _ = zip_writer::write_logs_to_zstd(&logs, &file_path, &pb_writing);
 
     pb_writing.finish_and_clear();
