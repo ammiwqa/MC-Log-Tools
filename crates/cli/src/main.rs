@@ -1,8 +1,9 @@
 use clap::{Parser, Subcommand};
 use create_base;
-use tools;
 use std::fs;
 use std::path::Path;
+use tools;
+
 
 #[derive(Parser)]
 #[command(name = "lt3", version = "1.0", about = "MC Log-toolss")]
@@ -29,11 +30,10 @@ enum Commands {
     Search {
         #[arg(required = true, value_name = "BASE")]
         base_name: String,
-    
+
         #[arg(required = true, value_name = "TEXT")]
         text: String,
-}
-    
+    },
 }
 
 fn read_paths_from_file<P: AsRef<Path>>(file_path: P) -> Result<Vec<String>, std::io::Error> {
@@ -53,7 +53,11 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::CreateBase { paths, from_file, name } => {
+        Commands::CreateBase {
+            paths,
+            from_file,
+            name,
+        } => {
             let mut all_paths = paths;
 
             if let Some(file_path) = from_file {
@@ -86,7 +90,27 @@ fn main() {
         Commands::Search { base_name, text } => {
             if !base_name.is_empty() {
                 if !text.is_empty() {
-                    search::search(&base_name, &text);
+                    let (progress, handle) = search::search_async(&base_name, &text);
+
+                    let max_lines = progress.get_max_progress();
+
+                    loop {
+                        let done = progress.get_progress();
+                        println!("processed: {} / {}", done, max_lines);
+
+                        if handle.is_finished() {
+                            break;
+                        }
+
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+
+                    // получаем результат
+                    let results = handle.join().unwrap();
+
+                    for (_, line) in results {
+                        println!("{}", line);
+                    }
                 }
             }
         }

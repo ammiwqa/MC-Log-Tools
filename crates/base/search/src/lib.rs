@@ -4,8 +4,44 @@ use std::io::{BufRead, BufReader, Read};
 use std::sync::Arc;
 use std::thread;
 use zstd::stream::read::Decoder as ZstdDecoder;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 
+
+
+pub struct Progress {
+    pub processed: AtomicU64,
+    pub max_lines: AtomicU64,
+}
+
+impl Progress {
+    pub fn new() -> Self {
+        Self {
+            processed: AtomicU64::new(0),
+            max_lines: AtomicU64::new(0),
+        }
+    }
+
+    #[inline]
+    pub fn inc_progress(&self, n: u64) {
+        self.processed.fetch_add(n, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn get_progress(&self) -> u64 {
+        self.processed.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn get_max_progress(&self) -> u64 {
+        self.max_lines.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn set_max_progress(&self, n: u64) {
+        self.max_lines.store(n, Ordering::Relaxed);
+    }
+}
 
 
 #[derive(Clone)]
@@ -186,14 +222,18 @@ fn open_zstd(path: &str) -> Box<dyn BufRead> {
 }
 
 
-fn worker(rx: Receiver<Vec<String>>, expr: Arc<Expr>) -> Vec<(u64, String)> {
+fn worker(
+    rx: Receiver<Vec<String>>,
+    expr: Arc<Expr>,
+    progress: Arc<Progress>,
+) -> Vec<(u64, String)> {
     let mut out = Vec::new();
 
     while let Ok(batch) = rx.recv() {
+        let batch_len = batch.len() as u64; // 👈 сохранили размер
+
         for line in batch {
-            if line.len() <= 13 {
-                continue;
-            }
+            if line.len() <= 13 { continue; }
 
             let unix = match line[0..12].parse::<u64>() {
                 Ok(v) => v,
@@ -206,60 +246,87 @@ fn worker(rx: Receiver<Vec<String>>, expr: Arc<Expr>) -> Vec<(u64, String)> {
                 out.push((unix, line));
             }
         }
+
+        progress.inc_progress(batch_len); // 🔥 ВОТ ЭТОГО НЕ ХВАТАЛО
     }
 
     out
 }
 
+pub fn search_async(
+    name: &str,
+    query: &str,
+) -> (Arc<Progress>, thread::JoinHandle<Vec<(u64, String)>>) {
 
-pub fn search(path: &str, query: &str) {
-    let reader = open_zstd(path);
+    let config = read_base_info::load_log(&name).unwrap();
+    let path = read_base_info::get_zst_path(&name).unwrap();
 
-    let tokens = tokenize(query);
-    let expr = Arc::new(parse(&tokens));
+    println!("{}", path);
+    
+    let query = query.to_string();
+    let progress = Arc::new(Progress::new());
 
-    let (tx, rx) = bounded::<Vec<String>>(num_cpus::get() * 2);
+    let max_lines: u64 = config
+        .get("lines")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    
+    progress.set_max_progress(max_lines);
 
-    let threads = num_cpus::get();
+    let handle = {
+        let progress = progress.clone();
 
-    let handles: Vec<_> = (0..threads)
-        .map(|_| {
-            let rx = rx.clone();
-            let expr = expr.clone();
+        thread::spawn(move || {
+            let reader = open_zstd(&path);
 
-            thread::spawn(move || worker(rx, expr))
-        })
-        .collect();
+            let tokens = tokenize(&query);
+            let expr = Arc::new(parse(&tokens));
 
-    let mut batch = Vec::with_capacity(10_000);
+            let (tx, rx) = bounded::<Vec<String>>(num_cpus::get() * 2);
 
-    for line in reader.lines() {
-        if let Ok(line) = line {
-            batch.push(line);
+            let threads = num_cpus::get();
+            
+            let handles: Vec<std::thread::JoinHandle<Vec<(u64, String)>>> = (0..threads)
+                .map(|_| {
+                    let rx = rx.clone();
+                    let expr = expr.clone();
+                    let progress = progress.clone();
+            
+                    thread::spawn(move || worker(rx, expr, progress))
+                })
+                .collect();
 
-            if batch.len() >= 10_000 {
-                tx.send(batch).unwrap();
-                batch = Vec::with_capacity(10_000);
+            let mut batch = Vec::with_capacity(10_000);
+
+            for line in reader.lines() {
+                if let Ok(line) = line {
+                    batch.push(line);
+
+                    if batch.len() >= 10_000 {
+                        tx.send(batch).unwrap();
+                        batch = Vec::with_capacity(10_000);
+                    }
+                }
             }
-        }
-    }
 
-    if !batch.is_empty() {
-        tx.send(batch).unwrap();
-    }
+            if !batch.is_empty() {
+                tx.send(batch).unwrap();
+            }
 
-    drop(tx);
+            drop(tx);
 
-    let mut results = Vec::new();
+            let mut results = Vec::new();
 
-    for h in handles {
-        let mut r = h.join().unwrap();
-        results.append(&mut r);
-    }
+            for h in handles {
+                let mut r = h.join().unwrap();
+                results.append(&mut r);
+            }
 
-    results.sort_unstable_by_key(|x| x.0);
+            results.sort_unstable_by_key(|x| x.0);
 
-    for (_, line) in results {
-        println!("{}", line);
-    }
+            results
+        })
+    };
+
+    (progress, handle)
 }

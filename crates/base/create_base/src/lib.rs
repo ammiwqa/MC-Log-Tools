@@ -37,10 +37,10 @@ pub fn create_base(paths: Vec<String>, name: String) {
     let mut files_snapshot: HashMap<String, Vec<String>> = HashMap::new();
 
     for path in &paths {
-        let np = get_logfiles::find_log_files(path, true, ".log.gz", false).unwrap();
-        let np_short_list = get_logfiles::find_log_files(path, false, ".log.gz", false).unwrap();
+        let np = get_logfiles::find_log_files(path, true, ".log.gz", false);
+        let np_short_list = get_logfiles::find_log_files(path, false, ".log.gz", false);
 
-        let latest_files = get_logfiles::find_log_files(path, true, "latest.log", true).unwrap();
+        let latest_files = get_logfiles::find_log_files(path, true, "latest.log", true);
 
         files_snapshot.insert(path.clone(), np_short_list);
 
@@ -203,7 +203,7 @@ pub fn create_base(paths: Vec<String>, name: String) {
     pb_writing.set_prefix(format!("{}", bright_cyan_style.apply_to("Writing")));
 
     let file_path = base_path
-        .join(format!("{}.log.zst", &name))
+        .join(format!("{}.zst", &name))
         .display()
         .to_string();
     let _ = zip_writer::write_logs_to_zstd(&logs, &file_path, &pb_writing);

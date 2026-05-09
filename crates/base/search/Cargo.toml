@@ -8,3 +8,6 @@ zstd = "0.13"
 flate2 = "1.0"
 crossbeam-channel = "0.5"
 num_cpus = "1.16"
+tokio = { version = "1", features = ["full"] }
+
+read_base_info = {path = "../read_base_info"}
