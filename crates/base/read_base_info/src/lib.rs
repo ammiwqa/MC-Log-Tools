@@ -1,7 +1,4 @@
-use std::collections::HashMap;
-use std::env;
-use std::fs;
-use std::path::PathBuf;
+use std::{collections::HashMap, env, fs, path::PathBuf};
 
 use serde_json::Value;
 
@@ -14,11 +11,21 @@ pub fn load_log(name: &str) -> Result<HashMap<String, Value>, String> {
     path.push(name);
     path.push(format!("{}.json", name));
 
-    let content = fs::read_to_string(&path).map_err(|e| format!("Err file: {}", e))?;
+    let content = match fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("Error! Wrong BataBase name!");
+            std::process::exit(1);
+        }
+    };
 
-    let json: HashMap<String, Value> =
-        serde_json::from_str(&content).map_err(|e| format!("Parse JSON Err: {}", e))?;
-
+    let json: HashMap<String, Value> = match serde_json::from_str(&content) {
+        Ok(j) => j,
+        Err(_) => {
+            eprintln!("Broken JSON DataBase file!");
+            std::process::exit(1);
+        }
+    };
     Ok(json)
 }
 
