@@ -36,4 +36,26 @@ logtools3 cb -f "C:\log_paths.txt" my_base3
 
 ----------
 
+
+## Search
+```bash
+logtools3 search <BASE> <TEXT>
+```
+
+Logic is supported:
++ `&` (AND)
++ `|` (OR)
++ `-` (NOT)
++ `()` (Ordering)
++ `*` (N skipped chars)
+
+
+------------
+
+### Examples
+Searching messages what includes "hello" and "cat" from my_base
+```bash
+logtools3 search my_base "hello & cat"
+```
+
 Its all for now :#
