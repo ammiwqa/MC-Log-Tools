@@ -14,7 +14,7 @@ cargo build --release
 ## Create DataBase
 
 ```bash
-logtools3 cb <PATHS>... <DB>
+logtools cb <PATHS>... <DB>
 ```
 
 ### Options
@@ -25,13 +25,13 @@ logtools3 cb <PATHS>... <DB>
 ### Examples
 Creating base with one log dir, 2 or more dirs or logs paths file
 ```bash
-logtools3 cb "%AppData%\.minecraft\logs" my_base
+logtools cb "%AppData%\.minecraft\logs" my_base
 ```
 ```bash
-logtools3 cb "C:\Minecraft\LunarClient\logs" "C:\Prism\logs" my_base2
+logtools cb "C:\Minecraft\LunarClient\logs" "C:\Prism\logs" my_base2
 ```
 ```bash
-logtools3 cb -f "C:\log_paths.txt" my_base3
+logtools cb -f "C:\log_paths.txt" my_base3
 ```
 
 ----------
@@ -39,7 +39,7 @@ logtools3 cb -f "C:\log_paths.txt" my_base3
 
 ## Search
 ```bash
-logtools3 search <BASE> <TEXT>
+logtools search <BASE> <TEXT>
 ```
 
 Logic is supported:
@@ -55,7 +55,7 @@ Logic is supported:
 ### Examples
 Searching messages what includes "hello" and "cat" from my_base
 ```bash
-logtools3 search my_base "hello & cat"
+logtools search my_base "hello & cat"
 ```
 
 Its all for now :#

@@ -173,7 +173,7 @@ pub fn create_base(paths: Vec<String>, name: String) {
     let appdata = env::var("APPDATA").expect("No APPDATA env variable");
 
     let mut base_path = PathBuf::from(appdata);
-    base_path.push("LogTools3");
+    base_path.push("LogTools");
     base_path.push("bases");
     base_path.push(&name);
 
