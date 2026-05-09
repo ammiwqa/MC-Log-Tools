@@ -230,7 +230,7 @@ fn worker(
     let mut out = Vec::new();
 
     while let Ok(batch) = rx.recv() {
-        let batch_len = batch.len() as u64; // 👈 сохранили размер
+        let batch_len = batch.len() as u64;
 
         for line in batch {
             if line.len() <= 13 { continue; }
@@ -247,7 +247,7 @@ fn worker(
             }
         }
 
-        progress.inc_progress(batch_len); // 🔥 ВОТ ЭТОГО НЕ ХВАТАЛО
+        progress.inc_progress(batch_len);
     }
 
     out
@@ -260,8 +260,6 @@ pub fn search_async(
 
     let config = read_base_info::load_log(&name).unwrap();
     let path = read_base_info::get_zst_path(&name).unwrap();
-
-    println!("{}", path);
     
     let query = query.to_string();
     let progress = Arc::new(Progress::new());

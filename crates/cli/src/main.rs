@@ -4,6 +4,9 @@ use std::fs;
 use std::path::Path;
 use tools;
 
+use console::Style;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "lt3", version = "1.0", about = "MC Log-toolss")]
@@ -94,23 +97,43 @@ fn main() {
 
                     let max_lines = progress.get_max_progress();
 
+                    let bright_cyan_style = Style::new().cyan().bold();
+
+                    let pb = Arc::new(ProgressBar::new(max_lines as u64));
+                    pb.set_style(
+                        ProgressStyle::default_bar()
+                            .template(
+                                "   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}]",
+                            )
+                            .unwrap()
+                            .progress_chars("=>-"),
+                    );
+
+                    pb.set_prefix(format!("{}", bright_cyan_style.apply_to("Searching")));
+
                     loop {
                         let done = progress.get_progress();
-                        println!("processed: {} / {}", done, max_lines);
+
+                        pb.set_position(done as u64);
 
                         if handle.is_finished() {
                             break;
                         }
 
-                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        std::thread::sleep(std::time::Duration::from_millis(5));
                     }
 
-                    // получаем результат
                     let results = handle.join().unwrap();
 
-                    for (_, line) in results {
-                        println!("{}", line);
-                    }
+                    pb.set_position(max_lines as u64);
+                    pb.finish_and_clear();
+
+                    println!(
+                        "   {} {} -> {} founds",
+                        Style::new().green().bold().apply_to("Searching"),
+                        max_lines,
+                        results.len()
+                    );
                 }
             }
         }

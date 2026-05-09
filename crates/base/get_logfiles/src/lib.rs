@@ -9,7 +9,6 @@ pub fn find_log_files(
 ) -> Vec<String> {
     let dir_path = Path::new(path);
 
-    // если папки нет — просто пустой результат
     if !dir_path.is_dir() {
         return Vec::new();
     }

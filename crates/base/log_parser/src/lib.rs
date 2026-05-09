@@ -48,7 +48,6 @@ pub fn parse_logs(
             }
             Err(_e) => {
                 stats.file_errors += 1;
-                //eprintln!("Error: {}", e);
             }
         }
     }
@@ -91,7 +90,6 @@ pub fn parse_latest(
             }
             Err(_e) => {
                 stats.file_errors += 1;
-                //eprintln!("Error: {}", e);
             }
         }
     }
@@ -219,7 +217,7 @@ fn process_buffer(
 
             let msg_bytes = match extract_chat_message(line) {
                 Some(m) => m,
-                None => continue, // ✔ просто пропускаем
+                None => continue,
             };
 
             let parsed = if line.len() >= 9 && line.get(3) == Some(&b':') {
@@ -324,7 +322,7 @@ fn parse_hms_long(line: &[u8]) -> Option<(u32, u32, u32)> {
         return None;
     }
 
-    // ожидаем формат HH:MM:SS
+    // HH:MM:SS
     let h1 = line.get(i + 1)?;
     let h2 = line.get(i + 2)?;
     let m1 = line.get(i + 4)?;
@@ -332,7 +330,6 @@ fn parse_hms_long(line: &[u8]) -> Option<(u32, u32, u32)> {
     let s1 = line.get(i + 7)?;
     let s2 = line.get(i + 8)?;
 
-    // 🔥 защита от паники
     if !h1.is_ascii_digit()
         || !h2.is_ascii_digit()
         || !m1.is_ascii_digit()

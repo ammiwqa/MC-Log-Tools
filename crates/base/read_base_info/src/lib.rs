@@ -15,8 +15,6 @@ pub fn load_log(name: &str) -> Result<HashMap<String, Value>, String> {
     path.push(name);
     path.push(format!("{}.json", name));
 
-    println!("{}", path.display());
-
     let content = fs::read_to_string(&path)
         .map_err(|e| format!("Err file: {}", e))?;
 
