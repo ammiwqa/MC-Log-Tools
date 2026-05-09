@@ -60,12 +60,16 @@ struct Pattern {
 #[inline]
 fn compile_pattern(s: &str) -> Pattern {
     Pattern {
-        parts: s.split('*').map(|x| x.to_string()).collect(),
+        parts: s.split('*')
+            .map(|x| x.to_lowercase())
+            .collect(),
     }
 }
 
 #[inline]
 fn match_pattern(p: &Pattern, text: &str) -> bool {
+    let text = text.to_lowercase(); // 👈 важно
+
     let mut pos = 0;
 
     for part in &p.parts {
@@ -240,9 +244,9 @@ fn worker(
                 Err(_) => continue,
             };
 
-            let text = &line[13..];
+            let text = line[13..].to_lowercase();
 
-            if matches(&expr, text) {
+            if matches(&expr, &text) {
                 out.push((unix, line));
             }
         }
