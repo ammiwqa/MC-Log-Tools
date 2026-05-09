@@ -68,7 +68,7 @@ fn compile_pattern(s: &str) -> Pattern {
 
 #[inline]
 fn match_pattern(p: &Pattern, text: &str) -> bool {
-    let text = text.to_lowercase(); // 👈 важно
+    let text = text.to_lowercase();
 
     let mut pos = 0;
 

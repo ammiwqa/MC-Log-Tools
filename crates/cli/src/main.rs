@@ -8,6 +8,7 @@ use console::Style;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
 
+
 #[derive(Parser)]
 #[command(name = "lt3", version = "1.0", about = "MC Log-toolss")]
 struct Cli {
@@ -55,6 +56,9 @@ fn read_paths_from_file<P: AsRef<Path>>(file_path: P) -> Result<Vec<String>, std
 fn main() {
     let cli = Cli::parse();
 
+    let bright_cyan_style = Style::new().cyan().bold();
+    let bright_green_style = Style::new().green().bold();
+
     match cli.command {
         Commands::CreateBase {
             paths,
@@ -93,12 +97,11 @@ fn main() {
         Commands::Search { base_name, text } => {
             if !base_name.is_empty() {
                 if !text.is_empty() {
+                    
                     let (progress, handle) = search::search_async(&base_name, &text);
-
                     let max_lines = progress.get_max_progress();
 
-                    let bright_cyan_style = Style::new().cyan().bold();
-
+                    
                     let pb = Arc::new(ProgressBar::new(max_lines as u64));
                     pb.set_style(
                         ProgressStyle::default_bar()
@@ -108,9 +111,10 @@ fn main() {
                             .unwrap()
                             .progress_chars("=>-"),
                     );
-
                     pb.set_prefix(format!("{}", bright_cyan_style.apply_to("Searching")));
 
+
+                    
                     loop {
                         let done = progress.get_progress();
 
@@ -123,14 +127,15 @@ fn main() {
                         std::thread::sleep(std::time::Duration::from_millis(5));
                     }
 
+                    
                     let results = handle.join().unwrap();
 
+                    
                     pb.set_position(max_lines as u64);
                     pb.finish_and_clear();
-
                     println!(
                         "   {} {} -> {} founds",
-                        Style::new().green().bold().apply_to("Searching"),
+                        bright_green_style.apply_to("Searching"),
                         max_lines,
                         results.len()
                     );
