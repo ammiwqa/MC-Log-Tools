@@ -45,7 +45,7 @@ logtools search <BASE> <TEXT>
 Logic is supported:
 + `&` (AND)
 + `|` (OR)
-+ `-` (NOT)
++ `!` (NOT)
 + `()` (Ordering)
 + `*` (N skipped chars)
 

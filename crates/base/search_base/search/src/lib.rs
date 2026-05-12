@@ -78,6 +78,7 @@ fn tokenize(input: &str) -> Vec<Token> {
             '-' => tokens.push(Token::Not),
             '(' => tokens.push(Token::LParen),
             ')' => tokens.push(Token::RParen),
+            '!' => tokens.push(Token::Not),
 
             '<' => {
                 let mut s = String::new();
