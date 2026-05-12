@@ -191,7 +191,7 @@ fn worker(
     let mut out = Vec::new();
 
     while let Ok(batch) = rx.recv() {
-        let batch_len = batch.len() as u64;
+        let mut local_count = 0;
 
         for line in batch {
             if line.len() <= 13 {
@@ -208,11 +208,19 @@ fn worker(
             if matches(&expr, &text) {
                 out.push((unix, line));
             }
+
+            local_count += 1;
+
+            if local_count == 32 {
+                progress.inc_progress(32);
+                local_count = 0;
+            }
         }
 
-        progress.inc_progress(batch_len);
+        if local_count > 0 {
+            progress.inc_progress(local_count);
+        }
     }
-
     out
 }
 
@@ -227,6 +235,8 @@ pub fn search_async(
     let progress = Arc::new(Progress::new());
 
     let max_lines: u64 = config.get("lines").and_then(|v| v.as_u64()).unwrap_or(0);
+
+    const MAX_CAPACITY: usize = 10_000;
 
     progress.set_max_progress(max_lines);
 
@@ -253,15 +263,15 @@ pub fn search_async(
                 })
                 .collect();
 
-            let mut batch = Vec::with_capacity(10_000);
+            let mut batch = Vec::with_capacity(MAX_CAPACITY);
 
             for line in reader.lines() {
                 if let Ok(line) = line {
                     batch.push(line);
 
-                    if batch.len() >= 10_000 {
+                    if batch.len() >= MAX_CAPACITY {
                         tx.send(batch).unwrap();
-                        batch = Vec::with_capacity(10_000);
+                        batch = Vec::with_capacity(MAX_CAPACITY);
                     }
                 }
             }

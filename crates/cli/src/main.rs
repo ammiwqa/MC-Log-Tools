@@ -9,6 +9,8 @@ use console::Style;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
 
+use indicatif::ProgressDrawTarget;
+
 #[derive(Parser)]
 #[command(name = "lt3", version = "1.0", about = "MC Log-toolss")]
 struct Cli {
@@ -101,6 +103,8 @@ fn main() {
                     let max_lines = progress.get_max_progress();
 
                     let search_pb = Arc::new(ProgressBar::new(max_lines as u64));
+                    search_pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(50));
+
                     search_pb.set_style(
                         ProgressStyle::default_bar()
                             .template(
@@ -115,13 +119,13 @@ fn main() {
                     loop {
                         let done = progress.get_progress();
 
-                        search_pb.set_position(done as u64);
+                        search_pb.set_position(done);
 
                         if handle.is_finished() {
                             break;
                         }
 
-                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        std::thread::sleep(std::time::Duration::from_millis(10));
                     }
 
                     let results = handle.join().unwrap();
@@ -141,6 +145,7 @@ fn main() {
                         write_result::write_results_async(results, "output.txt".to_string());
 
                     let write_pb = ProgressBar::new(write_job.progress.get_total());
+                    write_pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(50));
 
                     write_pb.set_style(
                         ProgressStyle::default_bar()
@@ -160,7 +165,7 @@ fn main() {
                             break;
                         }
 
-                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        std::thread::sleep(std::time::Duration::from_millis(10));
                     }
 
                     write_job.handle.join().unwrap();
