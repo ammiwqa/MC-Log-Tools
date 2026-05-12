@@ -5,6 +5,8 @@ use std::path::Path;
 use tools;
 use write_result;
 
+use std::process::Command;
+
 use console::Style;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
@@ -99,6 +101,9 @@ fn main() {
         Commands::Search { base_name, text } => {
             if !base_name.is_empty() {
                 if !text.is_empty() {
+                    let exit_file_name = tools::get_valid_file_name(&text);
+                    let exit_file_path = tools::get_results_file_path(&exit_file_name);
+
                     let (progress, handle) = search::search_async(&base_name, &text);
                     let max_lines = progress.get_max_progress();
 
@@ -142,7 +147,7 @@ fn main() {
                     );
 
                     let write_job =
-                        write_result::write_results_async(results, "output.txt".to_string());
+                        write_result::write_results_async(results, exit_file_path.clone());
 
                     let write_pb = ProgressBar::new(write_job.progress.get_total());
                     write_pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(50));
@@ -171,13 +176,17 @@ fn main() {
                     write_job.handle.join().unwrap();
 
                     write_pb.finish_and_clear();
-
                     println!(
-                        "   {} {} founds -> {}",
+                        "   {} {} founds -> ({})",
                         bright_green_style.apply_to("Writing"),
                         results_len,
-                        "output.txt"
+                        exit_file_path
                     );
+
+                    Command::new("cmd")
+                        .args(["/C", "start", "", &exit_file_path])
+                        .spawn()
+                        .unwrap();
                 }
             }
         }
