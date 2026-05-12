@@ -1,48 +1,11 @@
-use crossbeam_channel::{bounded, Receiver};
+use crossbeam_channel::{Receiver, bounded};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::sync::Arc;
 use std::thread;
 use zstd::stream::read::Decoder as ZstdDecoder;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-
-
-
-pub struct Progress {
-    pub processed: AtomicU64,
-    pub max_lines: AtomicU64,
-}
-
-impl Progress {
-    pub fn new() -> Self {
-        Self {
-            processed: AtomicU64::new(0),
-            max_lines: AtomicU64::new(0),
-        }
-    }
-
-    #[inline]
-    pub fn inc_progress(&self, n: u64) {
-        self.processed.fetch_add(n, Ordering::Relaxed);
-    }
-
-    #[inline]
-    pub fn get_progress(&self) -> u64 {
-        self.processed.load(Ordering::Relaxed)
-    }
-
-    #[inline]
-    pub fn get_max_progress(&self) -> u64 {
-        self.max_lines.load(Ordering::Relaxed)
-    }
-
-    #[inline]
-    pub fn set_max_progress(&self, n: u64) {
-        self.max_lines.store(n, Ordering::Relaxed);
-    }
-}
-
+use progress::Progress;
 
 #[derive(Clone)]
 enum Expr {
@@ -60,9 +23,7 @@ struct Pattern {
 #[inline]
 fn compile_pattern(s: &str) -> Pattern {
     Pattern {
-        parts: s.split('*')
-            .map(|x| x.to_lowercase())
-            .collect(),
+        parts: s.split('*').map(|x| x.to_lowercase()).collect(),
     }
 }
 
@@ -95,7 +56,6 @@ fn matches(expr: &Expr, text: &str) -> bool {
         Expr::Pattern(p) => match_pattern(p, text),
     }
 }
-
 
 #[derive(Clone)]
 enum Token {
@@ -151,7 +111,6 @@ fn tokenize(input: &str) -> Vec<Token> {
 
     tokens
 }
-
 
 fn parse(tokens: &[Token]) -> Expr {
     fn expr(tokens: &[Token], i: &mut usize) -> Expr {
@@ -213,7 +172,6 @@ fn parse(tokens: &[Token]) -> Expr {
     expr(tokens, &mut i)
 }
 
-
 fn open_zstd(path: &str) -> Box<dyn BufRead> {
     let mut file = File::open(path).unwrap();
 
@@ -224,7 +182,6 @@ fn open_zstd(path: &str) -> Box<dyn BufRead> {
 
     Box::new(BufReader::new(ZstdDecoder::new(file).unwrap()))
 }
-
 
 fn worker(
     rx: Receiver<Vec<String>>,
@@ -237,7 +194,9 @@ fn worker(
         let batch_len = batch.len() as u64;
 
         for line in batch {
-            if line.len() <= 13 { continue; }
+            if line.len() <= 13 {
+                continue;
+            }
 
             let unix = match line[0..12].parse::<u64>() {
                 Ok(v) => v,
@@ -261,18 +220,14 @@ pub fn search_async(
     name: &str,
     query: &str,
 ) -> (Arc<Progress>, thread::JoinHandle<Vec<(u64, String)>>) {
-
     let config = read_base_info::load_log(&name).unwrap();
     let path = read_base_info::get_zst_path(&name).unwrap();
-    
+
     let query = query.to_string();
     let progress = Arc::new(Progress::new());
 
-    let max_lines: u64 = config
-        .get("lines")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    
+    let max_lines: u64 = config.get("lines").and_then(|v| v.as_u64()).unwrap_or(0);
+
     progress.set_max_progress(max_lines);
 
     let handle = {
@@ -287,13 +242,13 @@ pub fn search_async(
             let (tx, rx) = bounded::<Vec<String>>(num_cpus::get() * 2);
 
             let threads = num_cpus::get();
-            
+
             let handles: Vec<std::thread::JoinHandle<Vec<(u64, String)>>> = (0..threads)
                 .map(|_| {
                     let rx = rx.clone();
                     let expr = expr.clone();
                     let progress = progress.clone();
-            
+
                     thread::spawn(move || worker(rx, expr, progress))
                 })
                 .collect();

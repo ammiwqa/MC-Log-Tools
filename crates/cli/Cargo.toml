@@ -12,3 +12,4 @@ console = "0.16.3"
 create_base = {path = "../base/create_base"}
 search = {path = "../base/search"}
 tools = {path = "../tools"}
+write_result = {path = "../base/write_result"}

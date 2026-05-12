@@ -3,11 +3,11 @@ use create_base;
 use std::fs;
 use std::path::Path;
 use tools;
+use write_result;
 
 use console::Style;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
-
 
 #[derive(Parser)]
 #[command(name = "lt3", version = "1.0", about = "MC Log-toolss")]
@@ -97,13 +97,11 @@ fn main() {
         Commands::Search { base_name, text } => {
             if !base_name.is_empty() {
                 if !text.is_empty() {
-                    
                     let (progress, handle) = search::search_async(&base_name, &text);
                     let max_lines = progress.get_max_progress();
 
-                    
-                    let pb = Arc::new(ProgressBar::new(max_lines as u64));
-                    pb.set_style(
+                    let search_pb = Arc::new(ProgressBar::new(max_lines as u64));
+                    search_pb.set_style(
                         ProgressStyle::default_bar()
                             .template(
                                 "   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}]",
@@ -111,14 +109,13 @@ fn main() {
                             .unwrap()
                             .progress_chars("=>-"),
                     );
-                    pb.set_prefix(format!("{}", bright_cyan_style.apply_to("Searching")));
 
+                    search_pb.set_prefix(format!("{}", bright_cyan_style.apply_to("Searching")));
 
-                    
                     loop {
                         let done = progress.get_progress();
 
-                        pb.set_position(done as u64);
+                        search_pb.set_position(done as u64);
 
                         if handle.is_finished() {
                             break;
@@ -127,17 +124,54 @@ fn main() {
                         std::thread::sleep(std::time::Duration::from_millis(5));
                     }
 
-                    
                     let results = handle.join().unwrap();
+                    let results_len = results.len();
 
-                    
-                    pb.set_position(max_lines as u64);
-                    pb.finish_and_clear();
+                    search_pb.set_position(max_lines as u64);
+                    search_pb.finish_and_clear();
+
                     println!(
-                        "   {} {} -> {} founds",
+                        "   {} {} lines -> {} founds",
                         bright_green_style.apply_to("Searching"),
                         max_lines,
-                        results.len()
+                        results_len
+                    );
+
+                    let write_job =
+                        write_result::write_results_async(results, "output.txt".to_string());
+
+                    let write_pb = ProgressBar::new(write_job.progress.get_total());
+
+                    write_pb.set_style(
+                        ProgressStyle::default_bar()
+                            .template(
+                                "   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}]",
+                            )
+                            .unwrap()
+                            .progress_chars("=>-"),
+                    );
+
+                    write_pb.set_prefix(format!("{}", bright_cyan_style.apply_to("Writing")));
+
+                    loop {
+                        write_pb.set_position(write_job.progress.get_written());
+
+                        if write_job.handle.is_finished() {
+                            break;
+                        }
+
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+
+                    write_job.handle.join().unwrap();
+
+                    write_pb.finish_and_clear();
+
+                    println!(
+                        "   {} {} founds -> {}",
+                        bright_green_style.apply_to("Writing"),
+                        results_len,
+                        "output.txt"
                     );
                 }
             }
