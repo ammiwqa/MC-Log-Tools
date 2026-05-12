@@ -1,13 +1,13 @@
 [workspace]
 members = [
     "crates/cli",
-    "crates/base/get_logfiles",
+    "crates/base/create_base/get_logfiles",
     "crates/tools",
-    "crates/base/zip_writer",
+    "crates/base/create_base/zip_writer",
 
-    "crates/base/create_base",
-    "crates/base/log_parser",
-    "crates/base/search",
+    "crates/base/create_base/create_base",
+    "crates/base/create_base/log_parser",
+    "crates/base/search_base/search",
     "crates/base/read_base_info"
 ]
 resolver = "2"

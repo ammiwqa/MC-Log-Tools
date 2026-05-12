@@ -9,7 +9,7 @@ clap = { version = "4.6.1", features = ["derive"] }
 indicatif = "0.18.4"
 console = "0.16.3"
 
-create_base = {path = "../base/create_base"}
-search = {path = "../base/search"}
+create_base = {path = "../base/create_base/create_base"}
+search = {path = "../base/search_base/search"}
 tools = {path = "../tools"}
-write_result = {path = "../base/write_result"}
+write_result = {path = "../base/search_base/write_result"}
