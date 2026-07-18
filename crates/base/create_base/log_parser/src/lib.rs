@@ -1,9 +1,9 @@
 use flate2::read::GzDecoder;
 use rayon::prelude::*;
+use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
-use sha2::{Sha256, Digest};
 
 use tools;
 
@@ -12,7 +12,7 @@ use hex::encode;
 use encoding_rs::WINDOWS_1251;
 use memchr::{memchr, memmem};
 
-const BUF_SIZE: usize = 256 * 1024;
+const BUF_SIZE: usize = 10000;
 
 use indicatif::ProgressBar;
 use std::sync::Arc;
@@ -27,7 +27,6 @@ pub fn parse_logs(
     files: Vec<String>,
     pb: &Arc<ProgressBar>,
 ) -> std::io::Result<(Vec<(i64, String)>, ErrorStats)> {
-
     let results: Vec<_> = files
         .par_iter()
         .map(|f| {
@@ -57,20 +56,13 @@ pub fn parse_logs(
 
 pub fn parse_latest(
     latest: Vec<(String, usize)>,
-    pb: &Arc<ProgressBar>
-) -> std::io::Result<(
-    Vec<(i64, String)>,
-    Vec<(String, usize, String)>,
-    ErrorStats
-)> {
-
+    pb: &Arc<ProgressBar>,
+) -> std::io::Result<(Vec<(i64, String)>, Vec<(String, usize, String)>, ErrorStats)> {
     let results: Vec<_> = latest
         .par_iter()
         .map(|(file, value)| {
             let res = process_file_plain(file, *value)
-                .map(|(result, stats, line, hash)| {
-                    (file.clone(), result, stats, line, hash)
-                });
+                .map(|(result, stats, line, hash)| (file.clone(), result, stats, line, hash));
 
             pb.inc(1);
             res
@@ -102,8 +94,7 @@ pub fn process_reader<R: Read>(
     base_day: i64,
     force_ansi: &mut bool,
 ) -> std::io::Result<(Vec<(i64, String)>, ErrorStats)> {
-
-    let mut result = Vec::with_capacity(10000);
+    let mut result = Vec::with_capacity(100000);
     let mut stats = ErrorStats::default();
 
     let mut buf = vec![0u8; BUF_SIZE];
@@ -134,18 +125,12 @@ pub fn process_reader<R: Read>(
     Ok((result, stats))
 }
 
-pub fn process_file_gz(
-    file_path: &str
-) -> std::io::Result<(Vec<(i64, String)>, ErrorStats)> {
-
+pub fn process_file_gz(file_path: &str) -> std::io::Result<(Vec<(i64, String)>, ErrorStats)> {
     let file = File::open(file_path)?;
     let decoder = GzDecoder::new(file);
     let reader = BufReader::with_capacity(BUF_SIZE, decoder);
 
-    let filename = match Path::new(file_path)
-        .file_name()
-        .and_then(|s| s.to_str())
-    {
+    let filename = match Path::new(file_path).file_name().and_then(|s| s.to_str()) {
         Some(f) => f,
         None => {
             return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
@@ -170,7 +155,6 @@ pub fn process_file_plain(
     file_path: &str,
     start_line: usize,
 ) -> std::io::Result<(Vec<(i64, String)>, ErrorStats, usize, String)> {
-
     let file_bytes = std::fs::read(file_path)?;
     let mut hasher = Sha256::new();
     hasher.update(&file_bytes);
@@ -282,10 +266,8 @@ fn parse_file_date(name: &str) -> Option<(i32, u32, u32)> {
 
     let to_digit = |c: u8| (c as char).to_digit(10);
 
-    let year = to_digit(b[0])? * 1000
-        + to_digit(b[1])? * 100
-        + to_digit(b[2])? * 10
-        + to_digit(b[3])?;
+    let year =
+        to_digit(b[0])? * 1000 + to_digit(b[1])? * 100 + to_digit(b[2])? * 10 + to_digit(b[3])?;
 
     let month = to_digit(b[5])? * 10 + to_digit(b[6])?;
     let day = to_digit(b[8])? * 10 + to_digit(b[9])?;
