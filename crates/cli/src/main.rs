@@ -8,10 +8,8 @@ use write_result;
 use std::process::Command;
 
 use console::Style;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::sync::Arc;
-
-use indicatif::ProgressDrawTarget;
 
 #[derive(Parser)]
 #[command(name = "lt3", version = "1.0", about = "MC Log-toolss")]
@@ -85,7 +83,22 @@ fn main() {
                 if !name.is_empty() {
                     match tools::validate_windows_filename(&name) {
                         Ok(()) => {
-                            create_base::create_base(all_paths, name);
+                            let bright_cyan_style = Style::new().cyan().bold();
+                            let parsing_pb = ProgressBar::new(1);
+                            parsing_pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(50));
+                            parsing_pb.set_style(
+                                ProgressStyle::default_bar()
+                                    .template(
+                                        "   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}] {msg:.white}",
+                                    )
+                                    .unwrap()
+                                    .progress_chars("=>-"),
+                            );
+                            parsing_pb
+                                .set_prefix(format!("{}", bright_cyan_style.apply_to("Parsing")));
+
+                            let wrapper = progress::ProgressBarWrapper::new(parsing_pb);
+                            create_base::create_base(all_paths, name, &wrapper);
                         }
                         Err(e) => {
                             println!("\n{}", tools::format_filename_error(&name, &e));

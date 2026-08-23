@@ -13,3 +13,4 @@ create_base = {path = "../base/create_base/create_base"}
 search = {path = "../base/search_base/search"}
 tools = {path = "../tools"}
 write_result = {path = "../base/search_base/write_result"}
+progress = {path = "../base/progress"}

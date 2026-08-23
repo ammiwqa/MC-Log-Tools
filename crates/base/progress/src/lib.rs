@@ -1,11 +1,44 @@
+use indicatif::ProgressBar;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub struct Progress {
+pub trait ProgressReporter: Send + Sync {
+    fn inc(&self, n: u64);
+    fn set_total(&self, n: u64);
+    fn set_message(&self, _msg: &str) {}
+}
+
+pub struct ProgressBarWrapper {
+    inner: ProgressBar,
+}
+
+impl ProgressBarWrapper {
+    pub fn new(pb: ProgressBar) -> Self {
+        Self { inner: pb }
+    }
+
+    pub fn finish_and_clear(&self) {
+        self.inner.finish_and_clear();
+    }
+}
+
+impl ProgressReporter for ProgressBarWrapper {
+    #[inline]
+    fn inc(&self, n: u64) {
+        self.inner.inc(n);
+    }
+
+    #[inline]
+    fn set_total(&self, n: u64) {
+        self.inner.set_length(n);
+    }
+}
+
+pub struct ParseProgress {
     pub processed: AtomicU64,
     pub max_lines: AtomicU64,
 }
 
-impl Progress {
+impl ParseProgress {
     pub fn new() -> Self {
         Self {
             processed: AtomicU64::new(0),
@@ -31,6 +64,18 @@ impl Progress {
     #[inline]
     pub fn set_max_progress(&self, n: u64) {
         self.max_lines.store(n, Ordering::Relaxed);
+    }
+}
+
+impl ProgressReporter for ParseProgress {
+    #[inline]
+    fn inc(&self, n: u64) {
+        self.inc_progress(n);
+    }
+
+    #[inline]
+    fn set_total(&self, n: u64) {
+        self.set_max_progress(n);
     }
 }
 
@@ -65,5 +110,19 @@ impl WriteProgress {
     #[inline]
     pub fn get_total(&self) -> u64 {
         self.total.load(Ordering::Relaxed)
+    }
+}
+
+impl ProgressReporter for WriteProgress {
+    #[inline]
+    fn inc(&self, n: u64) {
+        for _ in 0..n {
+            self.written.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    fn set_total(&self, n: u64) {
+        self.total.store(n, Ordering::Relaxed);
     }
 }

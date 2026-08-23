@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::thread;
 use zstd::stream::read::Decoder as ZstdDecoder;
 
-use progress::Progress;
+use progress::ParseProgress;
 
 #[derive(Clone)]
 enum Expr {
@@ -187,7 +187,7 @@ fn open_zstd(path: &str) -> Box<dyn BufRead> {
 fn worker(
     rx: Receiver<Vec<String>>,
     expr: Arc<Expr>,
-    progress: Arc<Progress>,
+    progress: Arc<ParseProgress>,
 ) -> Vec<(u64, String)> {
     let mut out = Vec::new();
 
@@ -228,12 +228,12 @@ fn worker(
 pub fn search_async(
     name: &str,
     query: &str,
-) -> (Arc<Progress>, thread::JoinHandle<Vec<(u64, String)>>) {
+) -> (Arc<ParseProgress>, thread::JoinHandle<Vec<(u64, String)>>) {
     let config = read_base_info::load_log(&name).unwrap();
     let path = read_base_info::get_zst_path(&name).unwrap();
 
     let query = query.to_string();
-    let progress = Arc::new(Progress::new());
+    let progress = Arc::new(ParseProgress::new());
 
     let max_lines: u64 = config.get("lines").and_then(|v| v.as_u64()).unwrap_or(0);
 

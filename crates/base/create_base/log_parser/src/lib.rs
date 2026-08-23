@@ -12,10 +12,9 @@ use hex::encode;
 use encoding_rs::WINDOWS_1251;
 use memchr::{memchr, memmem};
 
-const BUF_SIZE: usize = 10000;
+use progress::{ProgressBarWrapper, ProgressReporter};
 
-use indicatif::ProgressBar;
-use std::sync::Arc;
+const BUF_SIZE: usize = 10000;
 
 #[derive(Default, Debug, Clone)]
 pub struct ErrorStats {
@@ -23,15 +22,15 @@ pub struct ErrorStats {
     pub parse_errors: usize,
 }
 
-pub fn parse_logs(
+pub fn parse_logs_with_progress(
     files: Vec<String>,
-    pb: &Arc<ProgressBar>,
+    progress: &ProgressBarWrapper,
 ) -> std::io::Result<(Vec<(i64, String)>, ErrorStats)> {
     let results: Vec<_> = files
         .par_iter()
         .map(|f| {
             let res = process_file_gz(f);
-            pb.inc(1);
+            progress.inc(1);
             res
         })
         .collect();
@@ -54,9 +53,9 @@ pub fn parse_logs(
     Ok((all, stats))
 }
 
-pub fn parse_latest(
+pub fn parse_latest_with_progress(
     latest: Vec<(String, usize)>,
-    pb: &Arc<ProgressBar>,
+    progress: &ProgressBarWrapper,
 ) -> std::io::Result<(Vec<(i64, String)>, Vec<(String, usize, String)>, ErrorStats)> {
     let results: Vec<_> = latest
         .par_iter()
@@ -64,7 +63,73 @@ pub fn parse_latest(
             let res = process_file_plain(file, *value)
                 .map(|(result, stats, line, hash)| (file.clone(), result, stats, line, hash));
 
-            pb.inc(1);
+            progress.inc(1);
+            res
+        })
+        .collect();
+
+    let mut all = Vec::new();
+    let mut meta = Vec::new();
+    let mut stats = ErrorStats::default();
+
+    for res in results {
+        match res {
+            Ok((path, mut result, s, line, hash)) => {
+                all.append(&mut result);
+                meta.push((path, line, hash));
+                stats.parse_errors += s.parse_errors;
+            }
+            Err(_e) => {
+                stats.file_errors += 1;
+            }
+        }
+    }
+
+    Ok((all, meta, stats))
+}
+
+pub fn parse_logs<P: ProgressReporter>(
+    files: Vec<String>,
+    progress: &P,
+) -> std::io::Result<(Vec<(i64, String)>, ErrorStats)> {
+    let results: Vec<_> = files
+        .par_iter()
+        .map(|f| {
+            let res = process_file_gz(f);
+            progress.inc(1);
+            res
+        })
+        .collect();
+
+    let mut all = Vec::new();
+    let mut stats = ErrorStats::default();
+
+    for res in results {
+        match res {
+            Ok((mut v, s)) => {
+                all.append(&mut v);
+                stats.parse_errors += s.parse_errors;
+            }
+            Err(_e) => {
+                stats.file_errors += 1;
+            }
+        }
+    }
+
+    Ok((all, stats))
+}
+
+pub fn parse_latest<P: ProgressReporter>(
+    latest: Vec<(String, usize)>,
+    progress: &P,
+) -> std::io::Result<(Vec<(i64, String)>, Vec<(String, usize, String)>, ErrorStats)> {
+    let results: Vec<_> = latest
+        .par_iter()
+        .map(|(file, value)| {
+            let res = process_file_plain(file, *value)
+                .map(|(result, stats, line, hash)| (file.clone(), result, stats, line, hash));
+
+            progress.inc(1);
             res
         })
         .collect();

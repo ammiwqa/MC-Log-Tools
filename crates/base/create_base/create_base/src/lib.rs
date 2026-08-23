@@ -1,13 +1,12 @@
-use indicatif::{ProgressBar, ProgressStyle};
 use serde_json::json;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use console::{Style, style};
+use console::style;
 use log_parser::ErrorStats;
+use progress::ProgressReporter;
 
 fn format_error_stats(stats: &ErrorStats) -> String {
     match (stats.file_errors, stats.parse_errors) {
@@ -26,7 +25,7 @@ fn get_dir(path: &str) -> String {
         .to_string()
 }
 
-pub fn create_base(paths: Vec<String>, name: String) {
+pub fn create_base(paths: Vec<String>, name: String, progress: &progress::ProgressBarWrapper) {
     let mut all_logs: Vec<String> = Vec::new();
     let mut paths_json: Vec<serde_json::Value> = Vec::new();
     let mut latest_params: Vec<(String, usize)> = Vec::new();
@@ -54,26 +53,15 @@ pub fn create_base(paths: Vec<String>, name: String) {
     // =========================
     // PROGRESS BAR (logs)
     // =========================
-    let bright_cyan_style = Style::new().cyan().bold();
+    progress.set_total(all_logs_len as u64);
 
-    let pb = Arc::new(ProgressBar::new(all_logs_len as u64));
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template(
-                "   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}] {msg:.white}",
-            )
-            .unwrap()
-            .progress_chars("=>-"),
-    );
-    pb.set_prefix(format!("{}", bright_cyan_style.apply_to("Parsing")));
+    let (mut logs, errors) = log_parser::parse_logs_with_progress(all_logs, progress).unwrap();
 
-    let (mut logs, errors) = log_parser::parse_logs(all_logs, &pb).unwrap();
-
-    pb.finish_and_clear();
+    progress.finish_and_clear();
 
     println!(
-        "{} {} files -> {} lines {}",
-        style("   Parsing").green().bold(),
+        "   {} {} files -> {} lines {}",
+        style("Parsing").green().bold(),
         all_logs_len,
         logs.len(),
         format_error_stats(&errors)
@@ -84,25 +72,16 @@ pub fn create_base(paths: Vec<String>, name: String) {
     // =========================
     let latest_params_len = latest_params.len();
 
-    let pb_latest = Arc::new(ProgressBar::new(latest_params_len as u64));
-    pb_latest.set_style(
-        ProgressStyle::default_bar()
-            .template(
-                "   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}] {msg:.white}",
-            )
-            .unwrap()
-            .progress_chars("=>-"),
-    );
-    pb_latest.set_prefix(format!("{}", bright_cyan_style.apply_to("Parsing latest")));
+    progress.set_total(latest_params_len as u64);
 
     let (logs_latest, params, latest_errors) =
-        log_parser::parse_latest(latest_params, &pb_latest).unwrap();
+        log_parser::parse_latest_with_progress(latest_params, progress).unwrap();
 
-    pb_latest.finish_and_clear();
+    progress.finish_and_clear();
 
     println!(
-        "{} {} files -> {} lines {}",
-        style("   Parsing latest").green().bold(),
+        "   {} {} files -> {} lines {}",
+        style("Parsing latest").green().bold(),
         latest_params_len,
         logs_latest.len(),
         format_error_stats(&latest_errors)
@@ -189,30 +168,19 @@ pub fn create_base(paths: Vec<String>, name: String) {
     // =========================
     // WRITE LOGS
     // =========================
-    let pb_writing = Arc::new(ProgressBar::new(logs.len() as u64));
-
-    pb_writing.set_style(
-        ProgressStyle::default_bar()
-            .template(
-                "   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}] {msg:.white}",
-            )
-            .unwrap()
-            .progress_chars("=>-"),
-    );
-
-    pb_writing.set_prefix(format!("{}", bright_cyan_style.apply_to("Writing")));
+    progress.set_total(lines as u64);
 
     let file_path = base_path
         .join(format!("{}.zst", &name))
         .display()
         .to_string();
-    let _ = zip_writer::write_logs_to_zstd(&logs, &file_path, &pb_writing);
+    let _ = zip_writer::write_logs_to_zstd_with_progress(&logs, &file_path, progress);
 
-    pb_writing.finish_and_clear();
+    progress.finish_and_clear();
 
     println!(
-        "{} {} lines -> {}",
-        style("   Writing").green().bold(),
+        "   {} {} lines -> {}",
+        style("Writing").green().bold(),
         lines,
         name
     );
