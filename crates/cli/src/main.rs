@@ -2,14 +2,16 @@ use clap::{Parser, Subcommand};
 use create_base;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 use tools;
+use update_base;
 use write_result;
 
 use std::process::Command;
 
 use console::Style;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use std::sync::Arc;
+use progress::ProgressBarWrapper;
 
 #[derive(Parser)]
 #[command(name = "lt3", version = "1.0", about = "MC Log-toolss")]
@@ -39,6 +41,12 @@ enum Commands {
 
         #[arg(required = true, value_name = "TEXT")]
         text: String,
+    },
+
+    #[command(aliases = ["update", "u"])]
+    UpdateBase {
+        #[arg(required = true, value_name = "BASE")]
+        name: String,
     },
 }
 
@@ -85,7 +93,7 @@ fn main() {
                         Ok(()) => {
                             let bright_cyan_style = Style::new().cyan().bold();
                             let parsing_pb = ProgressBar::new(1);
-                            parsing_pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(50));
+                            parsing_pb.set_draw_target(ProgressDrawTarget::stderr());
                             parsing_pb.set_style(
                                 ProgressStyle::default_bar()
                                     .template(
@@ -201,6 +209,33 @@ fn main() {
                         .spawn()
                         .unwrap();
                 }
+            }
+        }
+
+        Commands::UpdateBase { name } => {
+            if !name.is_empty() {
+                let bright_cyan_style = Style::new().cyan().bold();
+                let update_pb = ProgressBar::new(1);
+                update_pb.set_draw_target(ProgressDrawTarget::stderr());
+                update_pb.set_style(
+                    ProgressStyle::default_bar()
+                        .template(
+                            "   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}] {msg:.white}",
+                        )
+                        .unwrap()
+                        .progress_chars("=>-"),
+                );
+                update_pb.set_prefix(format!("{}", bright_cyan_style.apply_to("Updating")));
+
+                let wrapper = ProgressBarWrapper::new(update_pb);
+                let (files, lines) = update_base::update_base_with_progress(&name, &wrapper);
+
+                println!(
+                    "   {} Updated {} files -> {} new lines",
+                    bright_green_style.apply_to("Update complete"),
+                    files,
+                    lines
+                );
             }
         }
     }

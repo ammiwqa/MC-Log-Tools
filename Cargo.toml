@@ -9,6 +9,7 @@ members = [
     "crates/base/create_base/log_parser",
     "crates/base/progress",
     "crates/base/search_base/search",
-    "crates/base/read_base_info"
+    "crates/base/read_base_info",
+    "crates/base/update_base"
 ]
 resolver = "2"

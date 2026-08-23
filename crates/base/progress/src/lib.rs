@@ -1,4 +1,5 @@
 use indicatif::ProgressBar;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub trait ProgressReporter: Send + Sync {
@@ -30,6 +31,18 @@ impl ProgressReporter for ProgressBarWrapper {
     #[inline]
     fn set_total(&self, n: u64) {
         self.inner.set_length(n);
+    }
+}
+
+impl ProgressReporter for &ProgressBarWrapper {
+    #[inline]
+    fn inc(&self, n: u64) {
+        (*self).inc(n);
+    }
+
+    #[inline]
+    fn set_total(&self, n: u64) {
+        (*self).set_total(n);
     }
 }
 
@@ -93,8 +106,10 @@ impl WriteProgress {
     }
 
     #[inline]
-    pub fn inc(&self) {
-        self.written.fetch_add(1, Ordering::Relaxed);
+    pub fn inc(&self, n: u64) {
+        for _ in 0..n {
+            self.written.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     #[inline]
@@ -113,16 +128,14 @@ impl WriteProgress {
     }
 }
 
-impl ProgressReporter for WriteProgress {
+impl ProgressReporter for Arc<WriteProgress> {
     #[inline]
     fn inc(&self, n: u64) {
-        for _ in 0..n {
-            self.written.fetch_add(1, Ordering::Relaxed);
-        }
+        self.as_ref().inc(n);
     }
 
     #[inline]
     fn set_total(&self, n: u64) {
-        self.total.store(n, Ordering::Relaxed);
+        self.as_ref().set_total(n);
     }
 }

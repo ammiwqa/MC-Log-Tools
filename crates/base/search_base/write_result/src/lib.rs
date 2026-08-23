@@ -24,7 +24,7 @@ pub fn write_results_async(results: Vec<(u64, String)>, output_path: String) -> 
             use std::io::Write;
 
             writeln!(writer, "{}", line).unwrap();
-            progress_clone.inc();
+            progress_clone.inc(1);
         }
 
         writer.flush().unwrap();

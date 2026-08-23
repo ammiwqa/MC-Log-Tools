@@ -1,4 +1,4 @@
-use flate2::read::GzDecoder;
+pub use flate2::read::GzDecoder;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use std::fs::File;
@@ -415,4 +415,57 @@ fn to_unix_days(y: i32, m: u32, d: u32) -> i64 {
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
 
     era * 146097 + doe - 719468
+}
+
+pub use zstd::stream::write::Encoder;
+
+use std::io::{BufWriter, Write};
+
+const TS_WIDTH: usize = 12;
+const OUT_BUF_SIZE: usize = 16 * 1024 * 1024;
+
+pub fn write_logs_to_zstd<P: ProgressReporter>(
+    logs: &[(i64, String)],
+    path: &str,
+    progress: &P,
+) -> std::io::Result<()> {
+    let file = File::create(path)?;
+    let buf_writer = BufWriter::with_capacity(OUT_BUF_SIZE, file);
+    let encoder = Encoder::new(buf_writer, 1)?;
+    let mut encoder = encoder.auto_finish();
+    let mut local_buf = Vec::with_capacity(OUT_BUF_SIZE);
+
+    for (ts, msg) in logs {
+        progress.inc(1);
+        write_fixed_ts(&mut local_buf, *ts);
+        local_buf.push(b' ');
+        local_buf.extend_from_slice(msg.as_bytes());
+        local_buf.push(b'\n');
+
+        if local_buf.len() >= OUT_BUF_SIZE {
+            encoder.write_all(&local_buf)?;
+            local_buf.clear();
+        }
+    }
+
+    if !local_buf.is_empty() {
+        encoder.write_all(&local_buf)?;
+    }
+
+    Ok(())
+}
+
+#[inline(always)]
+fn write_fixed_ts(buf: &mut Vec<u8>, ts: i64) {
+    let mut tmp = [b'0'; TS_WIDTH];
+    let mut n = ts;
+    let mut i = TS_WIDTH;
+
+    while n > 0 && i > 0 {
+        i -= 1;
+        tmp[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+
+    buf.extend_from_slice(&tmp);
 }
