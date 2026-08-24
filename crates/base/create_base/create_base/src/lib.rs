@@ -125,7 +125,6 @@ pub fn create_base(paths: Vec<String>, name: String, progress: &progress::Progre
     // =========================
     logs.extend(logs_latest);
     logs.sort_unstable_by_key(|x| x.0);
-    logs.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
 
     let lines = logs.len();
 

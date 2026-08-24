@@ -271,20 +271,18 @@ pub fn process_file_plain(
         }
     };
 
-    let total_lines = match std::fs::read(file_path) {
-        Ok(bytes) => bytes.iter().filter(|&&b| b == b'\n').count(),
-        Err(e) => {
-            return Err(std::io::Error::new(e.kind(), format!("Failed to read file for line count: {}", e)));
-        }
-    };
+    // start_line / last_line are counted in PARSED lines (chat messages),
+    // matching what result contains. This keeps drain() bounds-safe and
+    // makes incremental updates consistent across runs.
+    let total_parsed = result.len();
 
-    if start_line >= total_lines {
-        return Ok((Vec::new(), stats, total_lines, file_hash));
+    if start_line >= total_parsed {
+        return Ok((Vec::new(), stats, total_parsed, file_hash));
     }
 
     result.drain(0..start_line);
 
-    Ok((result, stats, total_lines, file_hash))
+    Ok((result, stats, total_parsed, file_hash))
 }
 
 #[inline(always)]
@@ -339,7 +337,16 @@ fn process_buffer(
                 }
             };
 
-            result.push((unix_time, text.into_owned()));
+            // Normalize: strip trailing \r (CRLF logs) and surrounding whitespace.
+            // Keeps stored bytes identical to what read-back produces, so
+            // re-writes stay idempotent and dedup stays stable.
+            let text = text.trim();
+
+            if text.is_empty() {
+                continue;
+            }
+
+            result.push((unix_time, text.to_owned()));
         }
     }
 }

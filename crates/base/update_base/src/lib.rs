@@ -101,14 +101,21 @@ pub fn update_base(name: &str, progress: &ProgressBarWrapper) -> Result<UpdateRe
             
             let mut latest_params = Vec::new();
             for latest_file in latest_files {
-                let dir = get_dir(&latest_file);
-                let stored_latest = latest_info.get(&dir).cloned().unwrap_or(json!({}));
-                
+                let stored_latest = latest_info
+                    .get("hash")
+                    .and_then(|_| Some(latest_info.clone()))
+                    .unwrap_or_else(|| {
+                        latest_info.get(&source_path).cloned().unwrap_or(json!({}))
+                    });
+
                 let stored_hash = stored_latest.get("hash").and_then(|h| h.as_str()).unwrap_or("");
                 let stored_last_line = stored_latest.get("last_line").and_then(|l| l.as_u64()).unwrap_or(0) as usize;
 
-                let current_hash = compute_file_hash(&latest_file).unwrap_or_default();
-                
+                let current_hash = match compute_file_hash(&latest_file) {
+                    Ok(h) => h,
+                    Err(_) => continue,
+                };
+
                 if current_hash != stored_hash {
                     latest_params.push((latest_file, stored_last_line));
                 }
@@ -116,16 +123,7 @@ pub fn update_base(name: &str, progress: &ProgressBarWrapper) -> Result<UpdateRe
 
             all_new_latest_logs.extend(latest_params.clone());
 
-            let mut updated_latest = latest_info;
-            for (latest_file, _) in &latest_params {
-                let dir = get_dir(latest_file);
-                let current_hash = compute_file_hash(latest_file).unwrap_or_default();
-                updated_latest[dir] = json!({
-                    "hash": current_hash,
-                    "last_line": 0
-                });
-            }
-            latest_map.insert(source_path.clone(), updated_latest);
+            latest_map.insert(source_path.clone(), json!({}));
         }
     }
 
@@ -174,7 +172,7 @@ pub fn update_base(name: &str, progress: &ProgressBarWrapper) -> Result<UpdateRe
     for (path, last_line, hash) in latest_params {
         let dir = get_dir(&path);
         if let Some(latest) = latest_map.get_mut(&dir) {
-            latest[dir] = json!({
+            *latest = json!({
                 "hash": hash,
                 "last_line": last_line
             });
@@ -197,13 +195,12 @@ pub fn update_base(name: &str, progress: &ProgressBarWrapper) -> Result<UpdateRe
 
     let zst_path = get_zst_path(name)?;
     let existing_logs = read_existing_logs(&zst_path)?;
-    
+
     let existing_count = existing_logs.len();
     let mut all_logs = existing_logs;
     all_logs.extend(new_logs);
     all_logs.extend(logs_latest);
     all_logs.sort_unstable_by_key(|x| x.0);
-    all_logs.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
 
     let new_lines_count = all_logs.len().saturating_sub(existing_count);
     let total_lines = all_logs.len();
