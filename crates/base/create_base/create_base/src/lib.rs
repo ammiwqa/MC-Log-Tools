@@ -44,6 +44,7 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
     let mut latest_params: Vec<(String, usize)> = Vec::new();
 
     let mut files_snapshot: HashMap<String, Vec<String>> = HashMap::new();
+    let mut ignored_snapshot: HashMap<String, Vec<String>> = HashMap::new();
 
     let mut seen_gz_files: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_latest_files: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -54,15 +55,15 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
         let np_short_list = get_logfiles::find_log_files(path, false, ".log.gz", false);
 
         let mut unique_short_list: Vec<String> = Vec::with_capacity(np_short_list.len());
+        let mut ignored_short_list: Vec<String> = Vec::new();
         for short in np_short_list {
-            if seen_gz_files.contains(&short) {
+            if !seen_gz_files.insert(short.clone()) {
+                duplicate_files += 1;
+                ignored_short_list.push(short);
                 continue;
             }
-            seen_gz_files.insert(short.clone());
             unique_short_list.push(short);
         }
-
-        duplicate_files += np.len().saturating_sub(unique_short_list.len());
 
         let unique_short_set: std::collections::HashSet<_> =
             unique_short_list.iter().cloned().collect();
@@ -84,6 +85,7 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
                 .collect();
 
         files_snapshot.insert(path.clone(), unique_short_list);
+        ignored_snapshot.insert(path.clone(), ignored_short_list);
 
         latest_params.extend(latest_files.into_iter().map(|f| (f, 0)));
 
@@ -136,11 +138,13 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
         let latest = latest_map.get(path).cloned().unwrap_or(json!({}));
 
         let files = files_snapshot.get(path).cloned().unwrap_or_default();
+        let ignored = ignored_snapshot.get(path).cloned().unwrap_or_default();
 
         paths_json.push(json!({
             path: {
                 "latest": latest,
-                "files": files
+                "files": files,
+                "ignored": ignored
             }
         }));
     }
@@ -161,8 +165,14 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
         .as_secs()
         .to_string();
 
-    let first_log_time = logs.first().map(|(ts, _)| ts.to_string()).unwrap_or_default();
-    let last_log_time = logs.last().map(|(ts, _)| ts.to_string()).unwrap_or_default();
+    let first_log_time = logs
+        .first()
+        .map(|(ts, _)| ts.to_string())
+        .unwrap_or_default();
+    let last_log_time = logs
+        .last()
+        .map(|(ts, _)| ts.to_string())
+        .unwrap_or_default();
 
     // =========================
     // BASE DIR

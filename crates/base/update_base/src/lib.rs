@@ -57,17 +57,40 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
     progress: &P,
 ) -> Result<UpdateResult, Box<dyn std::error::Error>> {
     let base_data = load_log(name)?;
-    
-    let paths_value = base_data.get("paths")
+
+    let paths_value = base_data
+        .get("paths")
         .and_then(|p| p.as_array())
         .ok_or("Invalid base config: missing paths")?;
 
     let mut all_new_gz_logs: Vec<String> = Vec::new();
     let mut all_new_latest_logs: Vec<(String, usize)> = Vec::new();
     let mut updated_paths: Vec<Value> = Vec::new();
-    
+
     let mut files_snapshot: HashMap<String, Vec<String>> = HashMap::new();
+    let mut ignored_snapshot: HashMap<String, Vec<String>> = HashMap::new();
     let mut latest_map: HashMap<String, Value> = HashMap::new();
+
+    let mut known_gz_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut known_latest_files: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+
+    for path_entry in paths_value {
+        for (_source_path, path_data) in path_entry
+            .as_object()
+            .ok_or("Invalid base config: path entry is not an object")?
+        {
+            for key in ["files", "ignored"] {
+                if let Some(files) = path_data.get(key).and_then(|f| f.as_array()) {
+                    for v in files {
+                        if let Some(s) = v.as_str() {
+                            known_gz_files.insert(s.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     for path_entry in paths_value {
         for (source_path, path_data) in path_entry
@@ -78,18 +101,33 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
             let existing_files: Vec<String> = path_data
                 .get("files")
                 .and_then(|f| f.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let existing_ignored: Vec<String> = path_data
+                .get("ignored")
+                .and_then(|f| f.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
 
-            let _current_gz_files = get_logfiles::find_log_files(source_path, true, ".log.gz", false);
-            let current_gz_short = get_logfiles::find_log_files(source_path, false, ".log.gz", false);
-            
-            let existing_set: std::collections::HashSet<_> = existing_files.iter().cloned().collect();
-            let new_gz_files: Vec<String> = current_gz_short
-                .iter()
-                .filter(|f| !existing_set.contains(*f))
-                .cloned()
-                .collect();
+            let _current_gz_files =
+                get_logfiles::find_log_files(source_path, true, ".log.gz", false);
+            let current_gz_short =
+                get_logfiles::find_log_files(source_path, false, ".log.gz", false);
+
+            let mut new_gz_files: Vec<String> = Vec::new();
+            for f in current_gz_short {
+                if known_gz_files.insert(f.clone()) {
+                    new_gz_files.push(f);
+                }
+            }
 
             let new_gz_full: Vec<String> = new_gz_files
                 .iter()
@@ -101,21 +139,42 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
                 .collect();
 
             all_new_gz_logs.extend(new_gz_full.clone());
-            files_snapshot.insert(source_path.clone(), current_gz_short);
+
+            let snapshot_entry = files_snapshot.entry(source_path.clone()).or_default();
+            for f in &existing_files {
+                if !snapshot_entry.contains(f) {
+                    snapshot_entry.push(f.clone());
+                }
+            }
+            snapshot_entry.extend(new_gz_files);
+
+            let ignored_entry = ignored_snapshot.entry(source_path.clone()).or_default();
+            for f in existing_ignored {
+                if !ignored_entry.contains(&f) {
+                    ignored_entry.push(f);
+                }
+            }
 
             let latest_files = get_logfiles::find_log_files(source_path, true, "latest.log", true);
-            
+
             let mut latest_params = Vec::new();
             for latest_file in latest_files {
+                if !known_latest_files.insert(latest_file.clone()) {
+                    continue;
+                }
                 let stored_latest = latest_info
                     .get("hash")
                     .and_then(|_| Some(latest_info.clone()))
-                    .unwrap_or_else(|| {
-                        latest_info.get(&source_path).cloned().unwrap_or(json!({}))
-                    });
+                    .unwrap_or_else(|| latest_info.get(&source_path).cloned().unwrap_or(json!({})));
 
-                let stored_hash = stored_latest.get("hash").and_then(|h| h.as_str()).unwrap_or("");
-                let stored_last_line = stored_latest.get("last_line").and_then(|l| l.as_u64()).unwrap_or(0) as usize;
+                let stored_hash = stored_latest
+                    .get("hash")
+                    .and_then(|h| h.as_str())
+                    .unwrap_or("");
+                let stored_last_line = stored_latest
+                    .get("last_line")
+                    .and_then(|l| l.as_u64())
+                    .unwrap_or(0) as usize;
 
                 let current_hash = match compute_file_hash(&latest_file) {
                     Ok(h) => h,
@@ -163,13 +222,14 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
     progress.finish();
 
     progress.set_total(all_new_latest_logs.len() as u64);
-    let (logs_latest, latest_params, latest_errors) = match parse_latest(all_new_latest_logs.clone(), progress) {
-        Ok(v) => v,
-        Err(e) => {
-            progress.finish();
-            return Err(Box::new(e));
-        }
-    };
+    let (logs_latest, latest_params, latest_errors) =
+        match parse_latest(all_new_latest_logs.clone(), progress) {
+            Ok(v) => v,
+            Err(e) => {
+                progress.finish();
+                return Err(Box::new(e));
+            }
+        };
     progress.finish();
 
     let parsed_gz_lines = new_logs.len();
@@ -185,18 +245,29 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
         }
     }
 
+    let mut written_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     for path_entry in paths_value {
         for (source_path, _path_data) in path_entry
             .as_object()
             .ok_or("Invalid base config: path entry is not an object")?
         {
+            if !written_paths.insert(source_path.clone()) {
+                continue;
+            }
+
             let files = files_snapshot.get(source_path).cloned().unwrap_or_default();
+            let ignored = ignored_snapshot
+                .get(source_path)
+                .cloned()
+                .unwrap_or_default();
             let latest = latest_map.get(source_path).cloned().unwrap_or(json!({}));
 
             updated_paths.push(json!({
                 source_path: {
                     "latest": latest,
-                    "files": files
+                    "files": files,
+                    "ignored": ignored
                 }
             }));
         }
@@ -220,8 +291,14 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
         .as_secs()
         .to_string();
 
-    let first_log_time = all_logs.first().map(|(ts, _)| ts.to_string()).unwrap_or_default();
-    let last_log_time = all_logs.last().map(|(ts, _)| ts.to_string()).unwrap_or_default();
+    let first_log_time = all_logs
+        .first()
+        .map(|(ts, _)| ts.to_string())
+        .unwrap_or_default();
+    let last_log_time = all_logs
+        .last()
+        .map(|(ts, _)| ts.to_string())
+        .unwrap_or_default();
 
     let old_time = base_data.get("time").cloned().unwrap_or(json!({
         "creation_unix": now.clone(),
