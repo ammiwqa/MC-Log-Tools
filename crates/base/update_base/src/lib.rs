@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use zip_writer::write_logs_to_zstd_with_progress;
 
@@ -18,7 +19,21 @@ fn get_dir(path: &str) -> String {
 }
 
 fn compute_file_hash(file_path: &str) -> std::io::Result<String> {
-    let file_bytes = fs::read(file_path)?;
+    #[cfg(windows)]
+    let file = {
+        use std::os::windows::fs::OpenOptionsExt;
+        File::options()
+            .read(true)
+            .share_mode(0x00000001 | 0x00000002 | 0x00000004)
+            .open(file_path)?
+    };
+    #[cfg(not(windows))]
+    let file = File::open(file_path)?;
+
+    use std::io::Read;
+    let mut file = file;
+    let mut file_bytes = Vec::new();
+    file.read_to_end(&mut file_bytes)?;
     let mut hasher = Sha256::new();
     hasher.update(&file_bytes);
     Ok(hex::encode(hasher.finalize()))

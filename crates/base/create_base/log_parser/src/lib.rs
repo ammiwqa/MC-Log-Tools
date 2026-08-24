@@ -14,6 +14,10 @@ use memchr::{memchr, memmem};
 
 use progress::{ProgressBarWrapper, ProgressReporter};
 
+// Import used in process_file_plain for Windows shared file access
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
+
 const BUF_SIZE: usize = 10000;
 
 #[derive(Default, Debug, Clone)]
@@ -59,9 +63,9 @@ pub fn parse_latest_with_progress(
 ) -> std::io::Result<(Vec<(i64, String)>, Vec<(String, usize, String)>, ErrorStats)> {
     let results: Vec<_> = latest
         .par_iter()
-        .map(|(file, value)| {
-            let res = process_file_plain(file, *value)
-                .map(|(result, stats, line, hash)| (file.clone(), result, stats, line, hash));
+        .map(|(file_path, value)| {
+            let res = process_file_plain(file_path, *value)
+                .map(|(result, stats, line, hash)| (file_path.clone(), result, stats, line, hash));
 
             progress.inc(1);
             res
@@ -79,7 +83,8 @@ pub fn parse_latest_with_progress(
                 meta.push((path, line, hash));
                 stats.parse_errors += s.parse_errors;
             }
-            Err(_e) => {
+            Err(e) => {
+                eprintln!("   [LATEST ERROR] {}", e);
                 stats.file_errors += 1;
             }
         }
@@ -220,21 +225,58 @@ pub fn process_file_plain(
     file_path: &str,
     start_line: usize,
 ) -> std::io::Result<(Vec<(i64, String)>, ErrorStats, usize, String)> {
-    let file_bytes = std::fs::read(file_path)?;
+    let file_bytes = match std::fs::read(file_path) {
+        Ok(b) => b,
+        Err(e) => {
+            return Err(std::io::Error::new(e.kind(), format!("Failed to read file for hash: {}", e)));
+        }
+    };
     let mut hasher = Sha256::new();
     hasher.update(&file_bytes);
     let file_hash = encode(hasher.finalize());
 
-    let file = File::open(file_path)?;
+    #[cfg(windows)]
+    let file = match File::options()
+        .read(true)
+        .share_mode(0x00000001 | 0x00000002 | 0x00000004)
+        .open(file_path) {
+        Ok(f) => f,
+        Err(e) => {
+            return Err(std::io::Error::new(e.kind(), format!("Failed to open file (shared): {}", e)));
+        }
+    };
+    #[cfg(not(windows))]
+    let file = match File::open(file_path) {
+        Ok(f) => f,
+        Err(e) => {
+            return Err(std::io::Error::new(e.kind(), format!("Failed to open file: {}", e)));
+        }
+    };
+
     let reader = BufReader::with_capacity(BUF_SIZE, file);
 
-    let base_day = tools::file_modified_days_local(file_path)?;
+    let base_day = match tools::file_modified_days_local(file_path) {
+        Ok(d) => d,
+        Err(e) => {
+            return Err(std::io::Error::new(e.kind(), format!("Failed to get file date: {}", e)));
+        }
+    };
 
     let mut force_ansi = false;
 
-    let (mut result, stats) = process_reader(reader, base_day, &mut force_ansi)?;
+    let (mut result, stats) = match process_reader(reader, base_day, &mut force_ansi) {
+        Ok(r) => r,
+        Err(e) => {
+            return Err(std::io::Error::new(e.kind(), format!("Failed to process reader: {}", e)));
+        }
+    };
 
-    let total_lines = std::fs::read_to_string(file_path)?.lines().count();
+    let total_lines = match std::fs::read(file_path) {
+        Ok(bytes) => bytes.iter().filter(|&&b| b == b'\n').count(),
+        Err(e) => {
+            return Err(std::io::Error::new(e.kind(), format!("Failed to read file for line count: {}", e)));
+        }
+    };
 
     if start_line >= total_lines {
         return Ok((Vec::new(), stats, total_lines, file_hash));

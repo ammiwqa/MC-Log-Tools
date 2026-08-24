@@ -35,14 +35,14 @@ struct Cli {
 enum Commands {
     #[command(aliases = ["cb", "create"])]
     CreateBase {
+        #[arg(required = true, value_name = "NAME")]
+        name: String,
+
         #[arg(value_name = "PATH")]
         paths: Vec<String>,
 
         #[arg(short, long, value_name = "FILE")]
         from_file: Option<String>,
-
-        #[arg(required = true, value_name = "NAME")]
-        name: String,
     },
 
     #[command(aliases = ["find", "s"])]
@@ -121,7 +121,9 @@ fn main() {
                             parsing_pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
                             let wrapper = progress::ProgressBarWrapper::new(parsing_pb);
-                            create_base::create_base(all_paths, name, &wrapper);
+                            if let Err(e) = create_base::create_base(all_paths, name, &wrapper) {
+                                eprintln!("Error creating base: {}", e);
+                            }
                         }
                         Err(e) => {
                             println!("\n{}", tools::format_filename_error(&name, &e));
