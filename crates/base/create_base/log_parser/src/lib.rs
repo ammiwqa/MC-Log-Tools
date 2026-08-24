@@ -14,7 +14,6 @@ use memchr::{memchr, memmem};
 
 use progress::{ProgressBarWrapper, ProgressReporter};
 
-// Import used in process_file_plain for Windows shared file access
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 
@@ -83,8 +82,7 @@ pub fn parse_latest_with_progress(
                 meta.push((path, line, hash));
                 stats.parse_errors += s.parse_errors;
             }
-            Err(e) => {
-                eprintln!("   [LATEST ERROR] {}", e);
+            Err(_e) => {
                 stats.file_errors += 1;
             }
         }
@@ -93,7 +91,7 @@ pub fn parse_latest_with_progress(
     Ok((all, meta, stats))
 }
 
-pub fn parse_logs<P: ProgressReporter>(
+pub fn parse_logs<P: ProgressReporter + ?Sized>(
     files: Vec<String>,
     progress: &P,
 ) -> std::io::Result<(Vec<(i64, String)>, ErrorStats)> {
@@ -124,7 +122,7 @@ pub fn parse_logs<P: ProgressReporter>(
     Ok((all, stats))
 }
 
-pub fn parse_latest<P: ProgressReporter>(
+pub fn parse_latest<P: ProgressReporter + ?Sized>(
     latest: Vec<(String, usize)>,
     progress: &P,
 ) -> std::io::Result<(Vec<(i64, String)>, Vec<(String, usize, String)>, ErrorStats)> {
@@ -271,9 +269,6 @@ pub fn process_file_plain(
         }
     };
 
-    // start_line / last_line are counted in PARSED lines (chat messages),
-    // matching what result contains. This keeps drain() bounds-safe and
-    // makes incremental updates consistent across runs.
     let total_parsed = result.len();
 
     if start_line >= total_parsed {
@@ -337,9 +332,6 @@ fn process_buffer(
                 }
             };
 
-            // Normalize: strip trailing \r (CRLF logs) and surrounding whitespace.
-            // Keeps stored bytes identical to what read-back produces, so
-            // re-writes stay idempotent and dedup stays stable.
             let text = text.trim();
 
             if text.is_empty() {

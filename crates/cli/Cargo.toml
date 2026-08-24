@@ -17,3 +17,4 @@ progress = {path = "../base/progress"}
 update_base = {path = "../base/update_base"}
 read_base_info = {path = "../base/read_base_info"}
 log_parser = {path = "../base/create_base/log_parser"}
+lt_core = {package = "lt-core", path = "../core"}

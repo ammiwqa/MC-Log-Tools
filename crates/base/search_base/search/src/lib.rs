@@ -120,62 +120,65 @@ fn tokenize(input: &str) -> Vec<Token> {
     tokens
 }
 
-fn parse(tokens: &[Token]) -> Expr {
+fn parse(tokens: &[Token]) -> Result<Expr, String> {
     if tokens.is_empty() {
-        return Expr::Pattern(Pattern { parts: Vec::new() });
+        return Ok(Expr::Pattern(Pattern { parts: Vec::new() }));
     }
-    fn expr(tokens: &[Token], i: &mut usize) -> Expr {
-        let mut node = term(tokens, i);
+    fn expr(tokens: &[Token], i: &mut usize) -> Result<Expr, String> {
+        let mut node = term(tokens, i)?;
 
         while *i < tokens.len() {
             match tokens[*i] {
                 Token::Or => {
                     *i += 1;
-                    node = Expr::Or(Box::new(node), Box::new(term(tokens, i)));
+                    node = Expr::Or(Box::new(node), Box::new(term(tokens, i)?));
                 }
                 _ => break,
             }
         }
 
-        node
+        Ok(node)
     }
 
-    fn term(tokens: &[Token], i: &mut usize) -> Expr {
-        let mut node = factor(tokens, i);
+    fn term(tokens: &[Token], i: &mut usize) -> Result<Expr, String> {
+        let mut node = factor(tokens, i)?;
 
         while *i < tokens.len() {
             match tokens[*i] {
                 Token::And => {
                     *i += 1;
-                    node = Expr::And(Box::new(node), Box::new(factor(tokens, i)));
+                    node = Expr::And(Box::new(node), Box::new(factor(tokens, i)?));
                 }
                 _ => break,
             }
         }
 
-        node
+        Ok(node)
     }
 
-    fn factor(tokens: &[Token], i: &mut usize) -> Expr {
+    fn factor(tokens: &[Token], i: &mut usize) -> Result<Expr, String> {
         match &tokens[*i] {
             Token::Not => {
                 *i += 1;
-                Expr::Not(Box::new(factor(tokens, i)))
+                Ok(Expr::Not(Box::new(factor(tokens, i)?)))
             }
 
             Token::LParen => {
                 *i += 1;
-                let node = expr(tokens, i);
+                let node = expr(tokens, i)?;
                 *i += 1;
-                node
+                Ok(node)
             }
 
             Token::Pattern(s) => {
                 *i += 1;
-                Expr::Pattern(compile_pattern(s))
+                Ok(Expr::Pattern(compile_pattern(s)))
             }
 
-            _ => panic!("bad token"),
+            _ => Err(format!(
+                "Bad query: unexpected token at position {}",
+                i
+            )),
         }
     }
 
@@ -183,15 +186,29 @@ fn parse(tokens: &[Token]) -> Expr {
     expr(tokens, &mut i)
 }
 
-fn open_zstd(path: &str) -> Box<dyn BufRead> {
-    let mut file = File::open(path).unwrap();
+pub fn compile_query(query: &str) -> Result<(), String> {
+    let tokens = tokenize(query);
+    parse(&tokens).map(|_| ())
+}
+
+fn open_zstd(path: &str) -> Result<Box<dyn BufRead>, String> {
+    let mut file = File::open(path).map_err(|e| format!("Cannot open base file: {}", e))?;
 
     let mut magic = [0u8; 4];
-    let _n = file.read(&mut magic).unwrap();
+    let _n = file
+        .read(&mut magic)
+        .map_err(|e| format!("Cannot read base file: {}", e))?;
 
-    let file = File::open(path).unwrap();
+    if magic != [0x28, 0xB5, 0x2F, 0xFD] {
+        return Err(format!("Not a zstd file: {}", path));
+    }
 
-    Box::new(BufReader::new(ZstdDecoder::new(file).unwrap()))
+    let file = File::open(path).map_err(|e| format!("Cannot open base file: {}", e))?;
+
+    let decoder =
+        ZstdDecoder::new(file).map_err(|e| format!("Broken zstd base file: {}", e))?;
+
+    Ok(Box::new(BufReader::new(decoder)))
 }
 
 fn worker(
@@ -235,12 +252,16 @@ fn worker(
     out
 }
 
+pub type SearchResult = Vec<(u64, String)>;
+
 pub fn search_async(
     name: &str,
     query: &str,
-) -> (Arc<ParseProgress>, thread::JoinHandle<Vec<(u64, String)>>) {
-    let config = read_base_info::load_log(&name).unwrap();
-    let path = read_base_info::get_zst_path(&name).unwrap();
+) -> Result<(Arc<ParseProgress>, thread::JoinHandle<Result<SearchResult, String>>), String> {
+    compile_query(query)?;
+
+    let config = read_base_info::load_log(&name)?;
+    let path = read_base_info::get_zst_path(&name)?;
 
     let query = query.to_string();
     let progress = Arc::new(ParseProgress::new());
@@ -254,11 +275,11 @@ pub fn search_async(
     let handle = {
         let progress = progress.clone();
 
-        thread::spawn(move || {
-            let reader = open_zstd(&path);
+        thread::spawn(move || -> Result<SearchResult, String> {
+            let reader = open_zstd(&path)?;
 
             let tokens = tokenize(&query);
-            let expr = Arc::new(parse(&tokens));
+            let expr = Arc::new(parse(&tokens)?);
 
             let (tx, rx) = bounded::<Vec<String>>(num_cpus::get() * 2);
 
@@ -281,14 +302,16 @@ pub fn search_async(
                     batch.push(line);
 
                     if batch.len() >= MAX_CAPACITY {
-                        tx.send(batch).unwrap();
+                        if tx.send(batch).is_err() {
+                            return Err("Search workers terminated unexpectedly".to_string());
+                        }
                         batch = Vec::with_capacity(MAX_CAPACITY);
                     }
                 }
             }
 
             if !batch.is_empty() {
-                tx.send(batch).unwrap();
+                let _ = tx.send(batch);
             }
 
             drop(tx);
@@ -296,15 +319,17 @@ pub fn search_async(
             let mut results = Vec::new();
 
             for h in handles {
-                let mut r = h.join().unwrap();
-                results.append(&mut r);
+                match h.join() {
+                    Ok(mut r) => results.append(&mut r),
+                    Err(_) => return Err("A search worker panicked".to_string()),
+                }
             }
 
             results.sort_unstable_by_key(|x| x.0);
 
-            results
+            Ok(results)
         })
     };
 
-    (progress, handle)
+    Ok((progress, handle))
 }

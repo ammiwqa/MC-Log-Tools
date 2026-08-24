@@ -11,21 +11,11 @@ pub fn load_log(name: &str) -> Result<HashMap<String, Value>, String> {
     path.push(name);
     path.push(format!("{}.json", name));
 
-    let content = match fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => {
-            eprintln!("Error! Wrong BataBase name!");
-            std::process::exit(1);
-        }
-    };
+    let content = fs::read_to_string(&path)
+        .map_err(|_| format!("Base '{}' not found: {}", name, path.display()))?;
 
-    let json: HashMap<String, Value> = match serde_json::from_str(&content) {
-        Ok(j) => j,
-        Err(_) => {
-            eprintln!("Broken JSON DataBase file!");
-            std::process::exit(1);
-        }
-    };
+    let json: HashMap<String, Value> =
+        serde_json::from_str(&content).map_err(|e| format!("Broken JSON base file: {}", e))?;
     Ok(json)
 }
 

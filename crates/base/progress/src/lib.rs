@@ -6,6 +6,7 @@ pub trait ProgressReporter: Send + Sync {
     fn inc(&self, n: u64);
     fn set_total(&self, n: u64);
     fn set_message(&self, _msg: &str) {}
+    fn finish(&self) {}
 }
 
 pub struct ProgressBarWrapper {
@@ -32,6 +33,11 @@ impl ProgressReporter for ProgressBarWrapper {
     fn set_total(&self, n: u64) {
         self.inner.set_length(n);
     }
+
+    #[inline]
+    fn finish(&self) {
+        self.finish_and_clear();
+    }
 }
 
 impl ProgressReporter for &ProgressBarWrapper {
@@ -43,6 +49,11 @@ impl ProgressReporter for &ProgressBarWrapper {
     #[inline]
     fn set_total(&self, n: u64) {
         (*self).set_total(n);
+    }
+
+    #[inline]
+    fn finish(&self) {
+        (*self).finish();
     }
 }
 

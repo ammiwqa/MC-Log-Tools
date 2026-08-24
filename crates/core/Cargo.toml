@@ -1,0 +1,16 @@
+[package]
+name = "lt-core"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "lt_core"
+
+[dependencies]
+progress = { path = "../base/progress" }
+read_base_info = { path = "../base/read_base_info" }
+create_base = { path = "../base/create_base/create_base" }
+update_base = { path = "../base/update_base" }
+search = { path = "../base/search_base/search" }
+log_parser = { path = "../base/create_base/log_parser" }
+tools = { path = "../tools" }

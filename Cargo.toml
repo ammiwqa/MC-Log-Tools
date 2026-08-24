@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/cli",
+    "crates/core",
     "crates/base/create_base/get_logfiles",
     "crates/tools",
     "crates/base/create_base/zip_writer",

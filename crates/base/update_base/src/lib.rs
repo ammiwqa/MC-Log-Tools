@@ -1,5 +1,5 @@
-use log_parser::{parse_latest_with_progress, parse_logs_with_progress, ErrorStats};
-use progress::{ProgressBarWrapper, ProgressReporter};
+use log_parser::{parse_latest, parse_logs, ErrorStats};
+use progress::ProgressReporter;
 use read_base_info::{get_zst_path, load_log};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -52,7 +52,10 @@ pub struct UpdateResult {
     pub no_new_files: bool,
 }
 
-pub fn update_base(name: &str, progress: &ProgressBarWrapper) -> Result<UpdateResult, Box<dyn std::error::Error>> {
+pub fn update_base<P: ProgressReporter + ?Sized>(
+    name: &str,
+    progress: &P,
+) -> Result<UpdateResult, Box<dyn std::error::Error>> {
     let base_data = load_log(name)?;
     
     let paths_value = base_data.get("paths")
@@ -67,7 +70,10 @@ pub fn update_base(name: &str, progress: &ProgressBarWrapper) -> Result<UpdateRe
     let mut latest_map: HashMap<String, Value> = HashMap::new();
 
     for path_entry in paths_value {
-        for (source_path, path_data) in path_entry.as_object().unwrap() {
+        for (source_path, path_data) in path_entry
+            .as_object()
+            .ok_or("Invalid base config: path entry is not an object")?
+        {
             let latest_info = path_data.get("latest").cloned().unwrap_or(json!({}));
             let existing_files: Vec<String> = path_data
                 .get("files")
@@ -132,7 +138,7 @@ pub fn update_base(name: &str, progress: &ProgressBarWrapper) -> Result<UpdateRe
     let total_new_files = new_gz_count + new_latest_count;
 
     if total_new_files == 0 {
-        progress.finish_and_clear();
+        progress.finish();
         return Ok(UpdateResult {
             new_gz_files: 0,
             new_latest_files: 0,
@@ -147,24 +153,24 @@ pub fn update_base(name: &str, progress: &ProgressBarWrapper) -> Result<UpdateRe
     }
 
     progress.set_total(all_new_gz_logs.len() as u64);
-    let (new_logs, gz_errors) = match parse_logs_with_progress(all_new_gz_logs, progress) {
+    let (new_logs, gz_errors) = match parse_logs(all_new_gz_logs, progress) {
         Ok(v) => v,
         Err(e) => {
-            progress.finish_and_clear();
+            progress.finish();
             return Err(Box::new(e));
         }
     };
-    progress.finish_and_clear();
+    progress.finish();
 
     progress.set_total(all_new_latest_logs.len() as u64);
-    let (logs_latest, latest_params, latest_errors) = match parse_latest_with_progress(all_new_latest_logs.clone(), progress) {
+    let (logs_latest, latest_params, latest_errors) = match parse_latest(all_new_latest_logs.clone(), progress) {
         Ok(v) => v,
         Err(e) => {
-            progress.finish_and_clear();
+            progress.finish();
             return Err(Box::new(e));
         }
     };
-    progress.finish_and_clear();
+    progress.finish();
 
     let parsed_gz_lines = new_logs.len();
     let parsed_latest_lines = logs_latest.len();
@@ -180,7 +186,10 @@ pub fn update_base(name: &str, progress: &ProgressBarWrapper) -> Result<UpdateRe
     }
 
     for path_entry in paths_value {
-        for (source_path, _path_data) in path_entry.as_object().unwrap() {
+        for (source_path, _path_data) in path_entry
+            .as_object()
+            .ok_or("Invalid base config: path entry is not an object")?
+        {
             let files = files_snapshot.get(source_path).cloned().unwrap_or_default();
             let latest = latest_map.get(source_path).cloned().unwrap_or(json!({}));
 
@@ -248,7 +257,7 @@ pub fn update_base(name: &str, progress: &ProgressBarWrapper) -> Result<UpdateRe
     progress.set_total(total_lines as u64);
     progress.set_message("Writing logs");
     write_logs_to_zstd_with_progress(&all_logs, &zst_path, progress)?;
-    progress.finish_and_clear();
+    progress.finish();
 
     Ok(UpdateResult {
         new_gz_files: new_gz_count,
