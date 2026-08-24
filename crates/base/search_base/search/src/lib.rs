@@ -29,6 +29,9 @@ fn compile_pattern(s: &str) -> Pattern {
 
 #[inline]
 fn match_pattern(p: &Pattern, text: &str) -> bool {
+    if p.parts.is_empty() {
+        return true;
+    }
     let text = text.to_lowercase();
 
     let mut pos = 0;
@@ -88,7 +91,9 @@ fn tokenize(input: &str) -> Vec<Token> {
                     }
                     s.push(ch);
                 }
-                tokens.push(Token::Pattern(s));
+                if !s.is_empty() {
+                    tokens.push(Token::Pattern(s));
+                }
             }
 
             ' ' => {}
@@ -105,7 +110,9 @@ fn tokenize(input: &str) -> Vec<Token> {
                     chars.next();
                 }
 
-                tokens.push(Token::Pattern(s));
+                if !s.is_empty() {
+                    tokens.push(Token::Pattern(s));
+                }
             }
         }
     }
@@ -114,6 +121,9 @@ fn tokenize(input: &str) -> Vec<Token> {
 }
 
 fn parse(tokens: &[Token]) -> Expr {
+    if tokens.is_empty() {
+        return Expr::Pattern(Pattern { parts: Vec::new() });
+    }
     fn expr(tokens: &[Token], i: &mut usize) -> Expr {
         let mut node = term(tokens, i);
 

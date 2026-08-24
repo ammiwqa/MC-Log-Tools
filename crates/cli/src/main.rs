@@ -137,7 +137,7 @@ fn main() {
         Commands::Search { base_name, text } => {
             if !base_name.is_empty() {
                 if !text.is_empty() {
-                    let exit_file_name = tools::get_valid_file_name(&text);
+                    let exit_file_name = tools::get_valid_file_name_with_timestamp(&text);
                     let exit_file_path = tools::get_results_file_path(&exit_file_name);
 
                     let (progress, handle) = search::search_async(&base_name, &text);

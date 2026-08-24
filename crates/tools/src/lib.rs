@@ -116,6 +116,27 @@ pub fn get_valid_file_name(input: &str) -> String {
     )
 }
 
+pub fn get_valid_file_name_with_timestamp(input: &str) -> String {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    format!(
+        "{}__{}.txt",
+        timestamp,
+        input
+            .replace("|", "OR")
+            .replace("*", "...")
+            .replace("?", ".")
+            .replace(":", " ")
+            .replace("/", " ")
+            .replace("\\", " ")
+            .replace("\"", " ")
+            .replace("<", "str(")
+            .replace(">", ")")
+    )
+}
+
 pub fn get_results_file_path(file_name: &str) -> String {
     let appdata = env::var("APPDATA").expect("APPDATA not found.");
 
