@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use create_base;
+use read_base_info;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use progress::ProgressBarWrapper;
 
 #[derive(Parser)]
-#[command(name = "lt3", version = "1.0", about = "MC Log-toolss")]
+#[command(name = "lt3", version = "1.0", about = "MC Log-tools")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -34,7 +35,7 @@ enum Commands {
         name: String,
     },
 
-    #[command(aliases = ["search", "find", "s"])]
+    #[command(aliases = ["find", "s"])]
     Search {
         #[arg(required = true, value_name = "BASE")]
         base_name: String,
@@ -48,6 +49,9 @@ enum Commands {
         #[arg(required = true, value_name = "BASE")]
         name: String,
     },
+
+    #[command(aliases = ["list", "ls", "l"])]
+    ListBases,
 }
 
 fn read_paths_from_file<P: AsRef<Path>>(file_path: P) -> Result<Vec<String>, std::io::Error> {
@@ -236,6 +240,17 @@ fn main() {
                     files,
                     lines
                 );
+            }
+        }
+
+        Commands::ListBases => {
+            match read_base_info::list_bases() {
+                Ok(bases) => {
+                    read_base_info::print_bases_table(&bases);
+                }
+                Err(e) => {
+                    eprintln!("Error listing bases: {}", e);
+                }
             }
         }
     }

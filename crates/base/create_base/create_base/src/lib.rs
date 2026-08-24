@@ -128,6 +128,15 @@ pub fn create_base(paths: Vec<String>, name: String, progress: &progress::Progre
 
     let lines = logs.len();
 
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .to_string();
+
+    let first_log_time = logs.first().map(|(ts, _)| ts.to_string()).unwrap_or_default();
+    let last_log_time = logs.last().map(|(ts, _)| ts.to_string()).unwrap_or_default();
+
     let json_value = json!({
         "name": name,
         "lines": lines,
@@ -137,10 +146,10 @@ pub fn create_base(paths: Vec<String>, name: String, progress: &progress::Progre
         "custom": "custom",
 
         "time": {
-            "creation_unix": "",
-            "edit_unix": "",
-            "FLD_unix": "",
-            "LLD_unix": ""
+            "creation_unix": now,
+            "edit_unix": now,
+            "FLD_unix": first_log_time,
+            "LLD_unix": last_log_time
         },
 
         "paths": paths_json

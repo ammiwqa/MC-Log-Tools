@@ -403,18 +403,34 @@ pub fn update_base_with_progress(name: &str, progress: &ProgressBarWrapper) -> (
     let new_lines_count = all_logs.len().saturating_sub(existing_count);
     let total_lines = all_logs.len();
 
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .to_string();
+
+    let first_log_time = all_logs.first().map(|(ts, _)| ts.to_string()).unwrap_or_default();
+    let last_log_time = all_logs.last().map(|(ts, _)| ts.to_string()).unwrap_or_default();
+
+    let old_time = base_data.get("time").cloned().unwrap_or(json!({
+        "creation_unix": now.clone(),
+        "edit_unix": "",
+        "FLD_unix": "",
+        "LLD_unix": ""
+    }));
+
     let updated_json = json!({
         "name": base_data.get("name").unwrap_or(&json!(name)),
         "lines": total_lines,
         "hash": base_data.get("hash").unwrap_or(&json!("")),
         "tags": base_data.get("tags").unwrap_or(&json!([])),
         "custom": base_data.get("custom").unwrap_or(&json!("custom")),
-        "time": base_data.get("time").unwrap_or(&json!({
-            "creation_unix": "",
-            "edit_unix": "",
-            "FLD_unix": "",
-            "LLD_unix": ""
-        })),
+        "time": {
+            "creation_unix": old_time.get("creation_unix").and_then(|v| v.as_str()).unwrap_or(&now),
+            "edit_unix": now,
+            "FLD_unix": first_log_time,
+            "LLD_unix": last_log_time
+        },
         "paths": updated_paths
     });
 
