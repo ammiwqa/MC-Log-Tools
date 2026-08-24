@@ -150,6 +150,13 @@ fn main() {
                     drop(tx);
                     drawer.join().unwrap();
 
+                    if result.duplicate_files > 0 {
+                        println!(
+                            "   {} {} duplicate files skipped",
+                            bright_green_style.apply_to("Dedup"),
+                            result.duplicate_files
+                        );
+                    }
                     if result.gz_files > 0 {
                         println!(
                             "   {} {} files -> {} lines {}",

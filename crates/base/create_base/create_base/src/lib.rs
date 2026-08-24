@@ -16,6 +16,7 @@ pub struct CreateResult {
     pub gz_errors: ErrorStats,
     pub latest_errors: ErrorStats,
     pub total_lines: usize,
+    pub duplicate_files: usize,
 }
 
 fn get_dir(path: &str) -> String {
@@ -24,6 +25,13 @@ fn get_dir(path: &str) -> String {
         .unwrap_or_else(|| Path::new(""))
         .to_string_lossy()
         .to_string()
+}
+
+fn file_name_of(p: &str) -> String {
+    Path::new(p)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| p.to_string())
 }
 
 pub fn create_base<P: ProgressReporter + ?Sized>(
@@ -37,17 +45,49 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
 
     let mut files_snapshot: HashMap<String, Vec<String>> = HashMap::new();
 
+    let mut seen_gz_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_latest_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut duplicate_files = 0usize;
+
     for path in &paths {
         let np = get_logfiles::find_log_files(path, true, ".log.gz", false);
         let np_short_list = get_logfiles::find_log_files(path, false, ".log.gz", false);
 
-        let latest_files = get_logfiles::find_log_files(path, true, "latest.log", true);
+        let mut unique_short_list: Vec<String> = Vec::with_capacity(np_short_list.len());
+        for short in np_short_list {
+            if seen_gz_files.contains(&short) {
+                continue;
+            }
+            seen_gz_files.insert(short.clone());
+            unique_short_list.push(short);
+        }
 
-        files_snapshot.insert(path.clone(), np_short_list);
+        duplicate_files += np.len().saturating_sub(unique_short_list.len());
+
+        let unique_short_set: std::collections::HashSet<_> =
+            unique_short_list.iter().cloned().collect();
+        let unique_full: Vec<String> = np
+            .into_iter()
+            .filter(|full| unique_short_set.contains(&file_name_of(full)))
+            .collect();
+
+        let latest_files: Vec<String> =
+            get_logfiles::find_log_files(path, true, "latest.log", true)
+                .into_iter()
+                .filter(|full| {
+                    if !seen_latest_files.insert(full.clone()) {
+                        duplicate_files += 1;
+                        return false;
+                    }
+                    true
+                })
+                .collect();
+
+        files_snapshot.insert(path.clone(), unique_short_list);
 
         latest_params.extend(latest_files.into_iter().map(|f| (f, 0)));
 
-        all_logs.extend(np);
+        all_logs.extend(unique_full);
     }
 
     let all_logs_len = all_logs.len();
@@ -182,5 +222,6 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
         gz_errors: errors,
         latest_errors,
         total_lines: lines,
+        duplicate_files,
     })
 }
