@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use create_base;
+use log_parser::ErrorStats;
 use read_base_info;
 use std::fs;
 use std::path::Path;
@@ -13,6 +14,15 @@ use std::process::Command;
 use console::Style;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use progress::ProgressBarWrapper;
+
+fn format_error_stats(stats: &ErrorStats) -> String {
+    match (stats.file_errors, stats.parse_errors) {
+        (0, 0) => String::new(),
+        (f, 0) => format!("({} file errors)", f),
+        (0, p) => format!("({} parse errors)", p),
+        (f, p) => format!("({} file errors, {} parse errors)", f, p),
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "lt3", version = "1.0", about = "MC Log-tools")]
@@ -97,7 +107,7 @@ fn main() {
                         Ok(()) => {
                             let bright_cyan_style = Style::new().cyan().bold();
                             let parsing_pb = ProgressBar::new(1);
-                            parsing_pb.set_draw_target(ProgressDrawTarget::stderr());
+                            parsing_pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(50));
                             parsing_pb.set_style(
                                 ProgressStyle::default_bar()
                                     .template(
@@ -108,6 +118,7 @@ fn main() {
                             );
                             parsing_pb
                                 .set_prefix(format!("{}", bright_cyan_style.apply_to("Parsing")));
+                            parsing_pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
                             let wrapper = progress::ProgressBarWrapper::new(parsing_pb);
                             create_base::create_base(all_paths, name, &wrapper);
@@ -219,8 +230,9 @@ fn main() {
         Commands::UpdateBase { name } => {
             if !name.is_empty() {
                 let bright_cyan_style = Style::new().cyan().bold();
+                let bright_green_style = Style::new().green().bold();
                 let update_pb = ProgressBar::new(1);
-                update_pb.set_draw_target(ProgressDrawTarget::stderr());
+                update_pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(50));
                 update_pb.set_style(
                     ProgressStyle::default_bar()
                         .template(
@@ -230,16 +242,44 @@ fn main() {
                         .progress_chars("=>-"),
                 );
                 update_pb.set_prefix(format!("{}", bright_cyan_style.apply_to("Updating")));
+                update_pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
                 let wrapper = ProgressBarWrapper::new(update_pb);
-                let (files, lines) = update_base::update_base_with_progress(&name, &wrapper);
-
-                println!(
-                    "   {} Updated {} files -> {} new lines",
-                    bright_green_style.apply_to("Update complete"),
-                    files,
-                    lines
-                );
+                match update_base::update_base(&name, &wrapper) {
+                    Ok(result) => {
+                        if result.no_new_files {
+                            println!("   {} No new logs to parse", bright_green_style.apply_to("Update"));
+                        } else {
+                            if result.new_gz_files > 0 {
+                                println!(
+                                    "   {} {} new gz files -> {} lines {}",
+                                    bright_green_style.apply_to("Parsing"),
+                                    result.new_gz_files,
+                                    result.parsed_gz_lines,
+                                    format_error_stats(&result.gz_errors)
+                                );
+                            }
+                            if result.new_latest_files > 0 {
+                                println!(
+                                    "   {} {} latest files -> {} lines {}",
+                                    bright_green_style.apply_to("Parsing latest"),
+                                    result.new_latest_files,
+                                    result.parsed_latest_lines,
+                                    format_error_stats(&result.latest_errors)
+                                );
+                            }
+                            println!(
+                                "   {} {} total lines -> {}",
+                                bright_green_style.apply_to("Writing"),
+                                result.total_lines,
+                                name
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error updating base: {}", e);
+                    }
+                }
             }
         }
 
