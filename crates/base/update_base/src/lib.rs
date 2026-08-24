@@ -188,7 +188,10 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
 
             all_new_latest_logs.extend(latest_params.clone());
 
-            latest_map.insert(source_path.clone(), json!({}));
+            // Start from the stored latest info so an untouched latest.log keeps
+            // its hash in the rewritten config (otherwise it would be re-parsed
+            // as "changed" on the NEXT update).
+            latest_map.insert(source_path.clone(), latest_info);
         }
     }
 
