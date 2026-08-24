@@ -1,3 +1,4 @@
+pub mod discovery;
 pub mod error;
 pub mod events;
 pub mod operations;

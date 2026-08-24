@@ -5,6 +5,8 @@ use thiserror::Error;
 use std::env;
 use std::path::PathBuf;
 
+pub mod config;
+
 #[derive(Error, Debug, PartialEq)]
 pub enum FilenameError {
     #[error("DB name cant be empty")]
