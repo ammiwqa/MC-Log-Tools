@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
@@ -56,6 +56,14 @@ enum Commands {
 
     #[command(aliases = ["list", "ls", "l"])]
     ListBases,
+
+    #[command(aliases = ["disc", "d"])]
+    Discover {
+        root: Option<String>,
+
+        #[arg(short, long, value_name = "FILE")]
+        out: Option<String>,
+    },
 }
 
 fn read_paths_from_file<P: AsRef<Path>>(file_path: P) -> Result<Vec<String>, std::io::Error> {
@@ -69,6 +77,71 @@ fn read_paths_from_file<P: AsRef<Path>>(file_path: P) -> Result<Vec<String>, std
         .collect();
 
     Ok(paths)
+}
+
+const DISCOVER_SKIP_DIRS: &[&str] = &[
+    "$recycle.bin",
+    "system volume information",
+    "windows",
+    "program files",
+    "program files (x86)",
+    "node_modules",
+    ".git",
+    "cache",
+    "caches",
+    "libraries",
+    "versions",
+    "assets",
+];
+
+fn has_mc_logs(dir: &Path) -> bool {
+    match fs::read_dir(dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if name.ends_with(".log.gz") || name == "latest.log" {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        Err(_) => false,
+    }
+}
+
+fn discover_log_dirs(dir: &Path, found: &mut Vec<String>) {
+    if has_mc_logs(dir) {
+        found.push(dir.to_string_lossy().to_string());
+        return;
+    }
+
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    let mut subdirs: Vec<PathBuf> = Vec::new();
+
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+
+        if DISCOVER_SKIP_DIRS.contains(&name.as_str()) {
+            continue;
+        }
+
+        subdirs.push(entry.path());
+    }
+
+    for subdir in subdirs {
+        discover_log_dirs(&subdir, found);
+    }
 }
 
 fn make_bar(prefix: &str) -> ProgressBar {
@@ -87,8 +160,7 @@ fn make_bar(prefix: &str) -> ProgressBar {
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
     pb
 }
-
-/// Drives a `CoreEvent`
+    
 fn spawn_drawer(pb: ProgressBar, rx: std::sync::mpsc::Receiver<CoreEvent>) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         while let Ok(ev) = rx.recv() {
@@ -338,5 +410,56 @@ fn main() {
                 eprintln!("Error listing bases: {}", e);
             }
         },
+
+        Commands::Discover { root, out } => {
+            let scan_root = match root {
+                Some(r) => PathBuf::from(r),
+                None => match std::env::var("USERPROFILE") {
+                    Ok(home) => PathBuf::from(home),
+                    Err(_) => {
+                        eprintln!("Cannot determine user home directory");
+                        std::process::exit(1);
+                    }
+                },
+            };
+
+            if !scan_root.is_dir() {
+                eprintln!("Not a directory: {}", scan_root.display());
+                std::process::exit(1);
+            }
+
+            let out_path = out.unwrap_or_else(|| {
+                tools::get_results_file_path(&tools::get_valid_file_name("mc_log_dirs"))
+            });
+
+            let bright_cyan_style = Style::new().cyan().bold();
+            println!(
+                "   {} {}",
+                bright_cyan_style.apply_to("Scanning"),
+                scan_root.display()
+            );
+
+            let start = std::time::Instant::now();
+
+            let mut found = Vec::new();
+            discover_log_dirs(&scan_root, &mut found);
+
+            fs::write(&out_path, found.join("\n")).unwrap_or_else(|e| {
+                eprintln!("Error writing output file: {}", e);
+                std::process::exit(1);
+            });
+
+            println!(
+                "   {} {} log directories -> ({}) in {:.1}s",
+                bright_green_style.apply_to("Discovered"),
+                found.len(),
+                out_path,
+                start.elapsed().as_secs_f32()
+            );
+            println!(
+                "   Create a global base: lt3 cb <NAME> --from-file \"{}\"",
+                out_path
+            );
+        }
     }
 }
