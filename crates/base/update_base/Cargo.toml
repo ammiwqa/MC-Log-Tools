@@ -4,16 +4,18 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-zstd = "0.13"
-flate2 = "1.0"
+serde_json = "1.0"
+console = "0.16.3"
+chrono = "0.4"
+rayon = "1.8"
 sha2 = "0.11.0"
 hex = "0.4.3"
-encoding_rs = "0.8"
-memchr = "2"
-memmem = "0.1"
+zstd = { version = "0.13", features = ["zstdmt"] }
 num_cpus = "1"
-log_parser = {path = "../create_base/log_parser"}
-read_base_info = {path = "../read_base_info"}
-progress = {path = "../progress"}
-get_logfiles = {path = "../create_base/get_logfiles"}
-serde_json = "1.0"
+
+get_logfiles = { path = "../create_base/get_logfiles" }
+log_parser = { path = "../create_base/log_parser" }
+progress = { path = "../progress" }
+read_base_info = { path = "../read_base_info" }
+zip_writer = { path = "../create_base/zip_writer" }
+tools = { path = "../../tools" }
