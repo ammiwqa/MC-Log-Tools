@@ -151,7 +151,7 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
     // =========================
     // BUILD CONFIG
     // =========================
-    let mut cfg = read_base_info::BaseConfig {
+    let cfg = read_base_info::BaseConfig {
         name: name.clone(),
         lines: lines as u64,
         hash: String::new(),

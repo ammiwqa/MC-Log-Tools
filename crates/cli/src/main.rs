@@ -80,6 +80,16 @@ enum Commands {
         #[arg(value_name = "VAR")]
         var: Option<String>,
     },
+
+    #[command(aliases = ["del", "rm"])]
+    Delete {
+        #[arg(required = true, value_name = "NAME")]
+        name: String,
+
+        /// Skip confirmation
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
 fn read_paths_from_file<P: AsRef<Path>>(file_path: P) -> Result<Vec<String>, std::io::Error> {
@@ -403,6 +413,37 @@ fn main() {
                 }
             }
         },
+
+        Commands::Delete { name, yes } => {
+            let confirm_enabled = tools::config::get_config_param("confirm_delete")
+                .map(|v| v != "false" && v != "0" && v != "no")
+                .unwrap_or(true);
+
+            if confirm_enabled && !yes {
+                println!(
+                    "   Delete base '{}' (config + logs)? [y/N]",
+                    name
+                );
+                let mut answer = String::new();
+                if std::io::stdin().read_line(&mut answer).is_err() {
+                    return;
+                }
+                let answer = answer.trim().to_lowercase();
+                if answer != "y" && answer != "yes" {
+                    println!("   Cancelled");
+                    return;
+                }
+            }
+
+            match read_base_info::delete_base(&name) {
+                Ok(()) => println!(
+                    "   {} {}",
+                    bright_green_style.apply_to("Deleted"),
+                    name
+                ),
+                Err(e) => eprintln!("Error deleting base: {}", e),
+            }
+        }
 
         Commands::Discover {
             root,

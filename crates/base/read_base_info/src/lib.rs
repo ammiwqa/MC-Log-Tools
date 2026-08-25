@@ -221,6 +221,16 @@ pub fn get_zst_path(name: &str) -> Result<String, String> {
     Ok(path.to_string_lossy().to_string())
 }
 
+pub fn delete_base(name: &str) -> Result<(), String> {
+    let dir = bases_dir()?.join(name);
+
+    if !dir.is_dir() {
+        return Err(format!("Base '{}' not found", name));
+    }
+
+    fs::remove_dir_all(&dir).map_err(|e| format!("Cannot delete base '{}': {}", name, e))
+}
+
 // =========================
 // LIST BASES
 // =========================
