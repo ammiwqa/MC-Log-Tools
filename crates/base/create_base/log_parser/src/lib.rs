@@ -10,12 +10,9 @@ use tools;
 use hex::encode;
 
 use encoding_rs::WINDOWS_1251;
-use memchr::{memchr, memmem};
+use memchr::{memchr_iter, memmem};
 
-use progress::{ProgressBarWrapper, ProgressReporter};
-
-#[cfg(windows)]
-use std::os::windows::fs::OpenOptionsExt;
+use progress::ProgressReporter;
 
 const BUF_SIZE: usize = 10000;
 
@@ -23,72 +20,6 @@ const BUF_SIZE: usize = 10000;
 pub struct ErrorStats {
     pub file_errors: usize,
     pub parse_errors: usize,
-}
-
-pub fn parse_logs_with_progress(
-    files: Vec<String>,
-    progress: &ProgressBarWrapper,
-) -> std::io::Result<(Vec<(i64, String)>, ErrorStats)> {
-    let results: Vec<_> = files
-        .par_iter()
-        .map(|f| {
-            let res = process_file_gz(f);
-            progress.inc(1);
-            res
-        })
-        .collect();
-
-    let mut all = Vec::new();
-    let mut stats = ErrorStats::default();
-
-    for res in results {
-        match res {
-            Ok((mut v, s)) => {
-                all.append(&mut v);
-                stats.parse_errors += s.parse_errors;
-            }
-            Err(_e) => {
-                stats.file_errors += 1;
-            }
-        }
-    }
-
-    Ok((all, stats))
-}
-
-pub fn parse_latest_with_progress(
-    latest: Vec<(String, usize)>,
-    progress: &ProgressBarWrapper,
-) -> std::io::Result<(Vec<(i64, String)>, Vec<(String, usize, String)>, ErrorStats)> {
-    let results: Vec<_> = latest
-        .par_iter()
-        .map(|(file_path, value)| {
-            let res = process_file_plain(file_path, *value)
-                .map(|(result, stats, line, hash)| (file_path.clone(), result, stats, line, hash));
-
-            progress.inc(1);
-            res
-        })
-        .collect();
-
-    let mut all = Vec::new();
-    let mut meta = Vec::new();
-    let mut stats = ErrorStats::default();
-
-    for res in results {
-        match res {
-            Ok((path, mut result, s, line, hash)) => {
-                all.append(&mut result);
-                meta.push((path, line, hash));
-                stats.parse_errors += s.parse_errors;
-            }
-            Err(_e) => {
-                stats.file_errors += 1;
-            }
-        }
-    }
-
-    Ok((all, meta, stats))
 }
 
 pub fn parse_logs<P: ProgressReporter + ?Sized>(
@@ -166,7 +97,7 @@ pub fn process_reader<R: Read>(
     let mut stats = ErrorStats::default();
 
     let mut buf = vec![0u8; BUF_SIZE];
-    let mut leftover = Vec::new();
+    let mut carry: Vec<u8> = Vec::new();
 
     loop {
         let n = reader.read(&mut buf)?;
@@ -174,19 +105,32 @@ pub fn process_reader<R: Read>(
             break;
         }
 
-        let data = &buf[..n];
-
-        if !leftover.is_empty() {
-            leftover.extend_from_slice(data);
-            process_buffer(&leftover, base_day, force_ansi, &mut result, &mut stats);
-            leftover.clear();
+        if carry.is_empty() {
+            // Fast path: no partial line pending, parse straight from the
+            // read buffer without any copying.
+            match buf[..n].iter().rposition(|&b| b == b'\n') {
+                Some(pos) => {
+                    process_buffer(
+                        &buf[..=pos],
+                        base_day,
+                        force_ansi,
+                        &mut result,
+                        &mut stats,
+                    );
+                    let tail = &buf[pos + 1..n];
+                    if !tail.is_empty() {
+                        carry.extend_from_slice(tail);
+                    }
+                }
+                None => carry.extend_from_slice(&buf[..n]),
+            }
         } else {
-            process_buffer(data, base_day, force_ansi, &mut result, &mut stats);
-        }
+            carry.extend_from_slice(&buf[..n]);
 
-        if let Some(pos) = data.iter().rposition(|&b| b == b'\n') {
-            leftover.clear();
-            leftover.extend_from_slice(&data[pos + 1..]);
+            if let Some(pos) = carry.iter().rposition(|&b| b == b'\n') {
+                process_buffer(&carry[..=pos], base_day, force_ansi, &mut result, &mut stats);
+                carry.drain(..=pos);
+            }
         }
     }
 
@@ -223,35 +167,15 @@ pub fn process_file_plain(
     file_path: &str,
     start_line: usize,
 ) -> std::io::Result<(Vec<(i64, String)>, ErrorStats, usize, String)> {
-    let file_bytes = match std::fs::read(file_path) {
-        Ok(b) => b,
-        Err(e) => {
-            return Err(std::io::Error::new(e.kind(), format!("Failed to read file for hash: {}", e)));
-        }
-    };
+    // Single read of the file: hash, parsing and line counting all work on the
+    // same in-memory buffer (previously the file was read three times).
+    let file_bytes = std::fs::read(file_path).map_err(|e| {
+        std::io::Error::new(e.kind(), format!("Failed to read file: {}", e))
+    })?;
+
     let mut hasher = Sha256::new();
     hasher.update(&file_bytes);
     let file_hash = encode(hasher.finalize());
-
-    #[cfg(windows)]
-    let file = match File::options()
-        .read(true)
-        .share_mode(0x00000001 | 0x00000002 | 0x00000004)
-        .open(file_path) {
-        Ok(f) => f,
-        Err(e) => {
-            return Err(std::io::Error::new(e.kind(), format!("Failed to open file (shared): {}", e)));
-        }
-    };
-    #[cfg(not(windows))]
-    let file = match File::open(file_path) {
-        Ok(f) => f,
-        Err(e) => {
-            return Err(std::io::Error::new(e.kind(), format!("Failed to open file: {}", e)));
-        }
-    };
-
-    let reader = BufReader::with_capacity(BUF_SIZE, file);
 
     let base_day = match tools::file_modified_days_local(file_path) {
         Ok(d) => d,
@@ -261,13 +185,16 @@ pub fn process_file_plain(
     };
 
     let mut force_ansi = false;
+    let mut result = Vec::with_capacity(100_000);
+    let mut stats = ErrorStats::default();
 
-    let (mut result, stats) = match process_reader(reader, base_day, &mut force_ansi) {
-        Ok(r) => r,
-        Err(e) => {
-            return Err(std::io::Error::new(e.kind(), format!("Failed to process reader: {}", e)));
-        }
-    };
+    process_buffer(
+        &file_bytes,
+        base_day,
+        &mut force_ansi,
+        &mut result,
+        &mut stats,
+    );
 
     let total_parsed = result.len();
 
@@ -290,56 +217,54 @@ fn process_buffer(
 ) {
     let mut start = 0;
 
-    for i in 0..data.len() {
-        if data[i] == b'\n' {
-            let line = &data[start..i];
-            start = i + 1;
+    for i in memchr_iter(b'\n', data) {
+        let line = &data[start..i];
+        start = i + 1;
 
-            if memchr(b'H', line).is_none() {
-                continue;
-            }
-
-            let msg_bytes = match extract_chat_message(line) {
-                Some(m) => m,
-                None => continue,
-            };
-
-            let parsed = if line.len() >= 9 && line.get(3) == Some(&b':') {
-                parse_hms(line)
-            } else {
-                parse_hms_long(line)
-            };
-
-            let (h, m, s) = match parsed {
-                Some(v) => v,
-                None => {
-                    stats.parse_errors += 1;
-                    continue;
-                }
-            };
-
-            let unix_time = base_day * 86400 + (h * 3600 + m * 60 + s) as i64;
-
-            let text: std::borrow::Cow<str> = if *force_ansi {
-                WINDOWS_1251.decode(msg_bytes).0
-            } else {
-                match std::str::from_utf8(msg_bytes) {
-                    Ok(s) => std::borrow::Cow::Borrowed(s),
-                    Err(_) => {
-                        *force_ansi = true;
-                        WINDOWS_1251.decode(msg_bytes).0
-                    }
-                }
-            };
-
-            let text = text.trim();
-
-            if text.is_empty() {
-                continue;
-            }
-
-            result.push((unix_time, text.to_owned()));
+        if memchr_iter(b'H', line).next().is_none() {
+            continue;
         }
+
+        let msg_bytes = match extract_chat_message(line) {
+            Some(m) => m,
+            None => continue,
+        };
+
+        let parsed = if line.len() >= 9 && line.get(3) == Some(&b':') {
+            parse_hms(line)
+        } else {
+            parse_hms_long(line)
+        };
+
+        let (h, m, s) = match parsed {
+            Some(v) => v,
+            None => {
+                stats.parse_errors += 1;
+                continue;
+            }
+        };
+
+        let unix_time = base_day * 86400 + (h * 3600 + m * 60 + s) as i64;
+
+        let text: std::borrow::Cow<str> = if *force_ansi {
+            WINDOWS_1251.decode(msg_bytes).0
+        } else {
+            match std::str::from_utf8(msg_bytes) {
+                Ok(s) => std::borrow::Cow::Borrowed(s),
+                Err(_) => {
+                    *force_ansi = true;
+                    WINDOWS_1251.decode(msg_bytes).0
+                }
+            }
+        };
+
+        let text = text.trim();
+
+        if text.is_empty() {
+            continue;
+        }
+
+        result.push((unix_time, text.to_owned()));
     }
 }
 
@@ -458,55 +383,3 @@ fn to_unix_days(y: i32, m: u32, d: u32) -> i64 {
     era * 146097 + doe - 719468
 }
 
-pub use zstd::stream::write::Encoder;
-
-use std::io::{BufWriter, Write};
-
-const TS_WIDTH: usize = 12;
-const OUT_BUF_SIZE: usize = 16 * 1024 * 1024;
-
-pub fn write_logs_to_zstd<P: ProgressReporter>(
-    logs: &[(i64, String)],
-    path: &str,
-    progress: &P,
-) -> std::io::Result<()> {
-    let file = File::create(path)?;
-    let buf_writer = BufWriter::with_capacity(OUT_BUF_SIZE, file);
-    let encoder = Encoder::new(buf_writer, 1)?;
-    let mut encoder = encoder.auto_finish();
-    let mut local_buf = Vec::with_capacity(OUT_BUF_SIZE);
-
-    for (ts, msg) in logs {
-        progress.inc(1);
-        write_fixed_ts(&mut local_buf, *ts);
-        local_buf.push(b' ');
-        local_buf.extend_from_slice(msg.as_bytes());
-        local_buf.push(b'\n');
-
-        if local_buf.len() >= OUT_BUF_SIZE {
-            encoder.write_all(&local_buf)?;
-            local_buf.clear();
-        }
-    }
-
-    if !local_buf.is_empty() {
-        encoder.write_all(&local_buf)?;
-    }
-
-    Ok(())
-}
-
-#[inline(always)]
-fn write_fixed_ts(buf: &mut Vec<u8>, ts: i64) {
-    let mut tmp = [b'0'; TS_WIDTH];
-    let mut n = ts;
-    let mut i = TS_WIDTH;
-
-    while n > 0 && i > 0 {
-        i -= 1;
-        tmp[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-    }
-
-    buf.extend_from_slice(&tmp);
-}
