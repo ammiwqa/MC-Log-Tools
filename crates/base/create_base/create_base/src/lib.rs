@@ -1,11 +1,9 @@
-use serde_json::json;
 use std::collections::HashMap;
-use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use log_parser::ErrorStats;
 use progress::ProgressReporter;
+use read_base_info::{LatestInfo, PathEntry, TimeInfo, save_log};
 
 #[derive(Debug)]
 pub struct CreateResult {
@@ -40,11 +38,9 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
     progress: &P,
 ) -> Result<CreateResult, Box<dyn std::error::Error>> {
     let mut all_logs: Vec<String> = Vec::new();
-    let mut paths_json: Vec<serde_json::Value> = Vec::new();
     let mut latest_params: Vec<(String, usize)> = Vec::new();
 
-    let mut files_snapshot: HashMap<String, Vec<String>> = HashMap::new();
-    let mut ignored_snapshot: HashMap<String, Vec<String>> = HashMap::new();
+    let mut entries_by_path: HashMap<String, PathEntry> = HashMap::new();
 
     let mut seen_gz_files: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_latest_files: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -54,19 +50,23 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
         let np = get_logfiles::find_log_files(path, true, ".log.gz", false);
         let np_short_list = get_logfiles::find_log_files(path, false, ".log.gz", false);
 
-        let mut unique_short_list: Vec<String> = Vec::with_capacity(np_short_list.len());
-        let mut ignored_short_list: Vec<String> = Vec::new();
+        let entry = entries_by_path.entry(path.clone()).or_default();
+        entry.path = path.clone();
+
         for short in np_short_list {
             if !seen_gz_files.insert(short.clone()) {
                 duplicate_files += 1;
-                ignored_short_list.push(short);
+                if !entry.ignored.contains(&short) {
+                    entry.ignored.push(short);
+                }
                 continue;
             }
-            unique_short_list.push(short);
+            if !entry.files.contains(&short) {
+                entry.files.push(short);
+            }
         }
 
-        let unique_short_set: std::collections::HashSet<_> =
-            unique_short_list.iter().cloned().collect();
+        let unique_short_set: std::collections::HashSet<_> = entry.files.iter().cloned().collect();
         let unique_full: Vec<String> = np
             .into_iter()
             .filter(|full| unique_short_set.contains(&file_name_of(full)))
@@ -83,9 +83,6 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
                     true
                 })
                 .collect();
-
-        files_snapshot.insert(path.clone(), unique_short_list);
-        ignored_snapshot.insert(path.clone(), ignored_short_list);
 
         latest_params.extend(latest_files.into_iter().map(|f| (f, 0)));
 
@@ -115,38 +112,27 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
     progress.finish();
 
     // =========================
-    // LATEST JSON GEN
+    // LATEST STATE GEN
     // =========================
-    let mut latest_map: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut latest_map: HashMap<String, LatestInfo> = HashMap::new();
 
     for (path, lines, hash) in params {
-        let dir = get_dir(&path);
-
         latest_map.insert(
-            dir,
-            json!({
-                "hash": hash,
-                "last_line": lines
-            }),
+            get_dir(&path),
+            LatestInfo {
+                hash,
+                last_line: lines as u64,
+            },
         );
     }
 
-    // =========================
-    // BUILD JSON
-    // =========================
-    for path in &paths {
-        let latest = latest_map.get(path).cloned().unwrap_or(json!({}));
-
-        let files = files_snapshot.get(path).cloned().unwrap_or_default();
-        let ignored = ignored_snapshot.get(path).cloned().unwrap_or_default();
-
-        paths_json.push(json!({
-            path: {
-                "latest": latest,
-                "files": files,
-                "ignored": ignored
-            }
-        }));
+    for (path, entry) in entries_by_path.iter_mut() {
+        if let Some(info) = latest_map.get(path) {
+            entry.set_latest_flat(info.clone());
+        } else {
+            entry.latest =
+                serde_json::to_value(LatestInfo::default()).unwrap_or(Default::default());
+        }
     }
 
     // =========================
@@ -160,69 +146,44 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
 
     let lines = logs.len();
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_secs()
-        .to_string();
-
-    let first_log_time = logs
-        .first()
-        .map(|(ts, _)| ts.to_string())
-        .unwrap_or_default();
-    let last_log_time = logs
-        .last()
-        .map(|(ts, _)| ts.to_string())
-        .unwrap_or_default();
+    let now = system_time_secs();
 
     // =========================
-    // BASE DIR
+    // BUILD CONFIG
     // =========================
-    let appdata = env::var("APPDATA")?;
-
-    let mut base_path = PathBuf::from(appdata);
-    base_path.push("LogTools");
-    base_path.push("bases");
-    base_path.push(&name);
-
-    fs::create_dir_all(&base_path)?;
+    let mut cfg = read_base_info::BaseConfig {
+        name: name.clone(),
+        lines: lines as u64,
+        hash: String::new(),
+        tags: Vec::new(),
+        custom: "custom".to_string(),
+        time: TimeInfo {
+            creation_unix: now.to_string(),
+            edit_unix: now.to_string(),
+            fld_unix: logs
+                .first()
+                .map(|(ts, _)| ts.to_string())
+                .unwrap_or_default(),
+            lld_unix: logs
+                .last()
+                .map(|(ts, _)| ts.to_string())
+                .unwrap_or_default(),
+        },
+        paths: read_base_info::normalize_paths(entries_by_path.into_values().collect()),
+    };
 
     // =========================
-    // WRITE LOGS
+    // BASE DIR + WRITE LOGS
     // =========================
     progress.set_total(lines as u64);
     progress.set_message("Writing logs");
 
-    let zst_path = base_path
-        .join(format!("{}.zst", &name))
-        .display()
-        .to_string();
+    save_log(&name, &cfg)?;
+
+    let zst_path = read_base_info::get_zst_path(&name)?;
     zip_writer::write_logs_to_zstd_with_progress(&logs, &zst_path, progress)?;
 
     progress.finish();
-
-    // =========================
-    // WRITE LT3 BASE CONF
-    // =========================
-    let json_value = json!({
-        "name": name,
-        "lines": lines,
-        "hash": "",
-
-        "tags": [],
-        "custom": "custom",
-
-        "time": {
-            "creation_unix": now,
-            "edit_unix": now,
-            "FLD_unix": first_log_time,
-            "LLD_unix": last_log_time
-        },
-
-        "paths": paths_json
-    });
-
-    let file_path = base_path.join(format!("{}.json", &name));
-    fs::write(&file_path, serde_json::to_string_pretty(&json_value)?)?;
 
     Ok(CreateResult {
         gz_files: all_logs_len,
@@ -234,4 +195,11 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
         total_lines: lines,
         duplicate_files,
     })
+}
+
+fn system_time_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }

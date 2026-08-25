@@ -11,3 +11,4 @@ get_logfiles = {path = "../get_logfiles" }
 log_parser = {path = "../log_parser"}
 progress = {path = "../../progress"}
 zip_writer = {path = "../zip_writer" }
+read_base_info = { path = "../../read_base_info" }

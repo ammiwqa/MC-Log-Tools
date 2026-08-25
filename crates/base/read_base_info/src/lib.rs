@@ -1,35 +1,229 @@
 use std::{collections::HashMap, env, fs, path::PathBuf};
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub fn load_log(name: &str) -> Result<HashMap<String, Value>, String> {
-    let appdata = env::var("APPDATA").map_err(|_| "APPDATA not found.".to_string())?;
+// =========================
+// TYPED BASE CONFIG
+// =========================
 
-    let mut path = PathBuf::from(appdata);
-    path.push("LogTools");
-    path.push("bases");
-    path.push(name);
-    path.push(format!("{}.json", name));
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TimeInfo {
+    #[serde(default)]
+    pub creation_unix: String,
+    #[serde(default)]
+    pub edit_unix: String,
+    #[serde(rename = "FLD_unix", default)]
+    pub fld_unix: String,
+    #[serde(rename = "LLD_unix", default)]
+    pub lld_unix: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LatestInfo {
+    #[serde(default)]
+    pub hash: String,
+    #[serde(default)]
+    pub last_line: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PathEntry {
+    pub path: String,
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(default)]
+    pub ignored: Vec<String>,
+    #[serde(default)]
+    pub latest: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PathEntryRaw {
+    New(PathEntryFields),
+    Legacy(HashMap<String, LegacyPathData>),
+}
+
+#[derive(Deserialize)]
+struct PathEntryFields {
+    path: String,
+    #[serde(default)]
+    files: Vec<String>,
+    #[serde(default)]
+    ignored: Vec<String>,
+    #[serde(default)]
+    latest: Value,
+}
+
+#[derive(Deserialize)]
+struct LegacyPathData {
+    #[serde(default)]
+    files: Vec<String>,
+    #[serde(default)]
+    ignored: Vec<String>,
+    #[serde(default)]
+    latest: Value,
+}
+
+impl PathEntry {
+    pub fn latest_flat(&self) -> LatestInfo {
+        flatten_latest(&self.latest, &self.path)
+    }
+
+    pub fn set_latest_flat(&mut self, info: LatestInfo) {
+        self.latest = serde_json::to_value(info).unwrap_or(Value::Null);
+    }
+}
+
+fn flatten_latest(v: &Value, source_path: &str) -> LatestInfo {
+    match v {
+        Value::Null => LatestInfo::default(),
+        Value::Object(map) => {
+            if map.contains_key("hash") || map.contains_key("last_line") {
+                serde_json::from_value(v.clone()).unwrap_or_default()
+            } else if let Some(inner) = map.get(source_path) {
+                serde_json::from_value(inner.clone()).unwrap_or_default()
+            } else {
+                map.values()
+                    .next()
+                    .and_then(|x| serde_json::from_value::<LatestInfo>(x.clone()).ok())
+                    .unwrap_or_default()
+            }
+        }
+        _ => LatestInfo::default(),
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BaseConfig {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub lines: u64,
+    #[serde(default)]
+    pub hash: String,
+    #[serde(default)]
+    pub tags: Vec<Value>,
+    #[serde(default = "default_custom")]
+    pub custom: String,
+    #[serde(default)]
+    pub time: TimeInfo,
+    #[serde(default, deserialize_with = "de_path_entry_vec")]
+    pub paths: Vec<PathEntry>,
+}
+
+fn default_custom() -> String {
+    "custom".to_string()
+}
+
+fn de_path_entry_vec<'de, D>(d: D) -> Result<Vec<PathEntry>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Vec::<PathEntryRaw>::deserialize(d)?;
+    Ok(raw
+        .into_iter()
+        .flat_map(|r| match r {
+            PathEntryRaw::New(f) => vec![PathEntry {
+                path: f.path,
+                files: f.files,
+                ignored: f.ignored,
+                latest: f.latest,
+            }],
+            PathEntryRaw::Legacy(map) => map
+                .into_iter()
+                .map(|(path, data)| PathEntry {
+                    path,
+                    files: data.files,
+                    ignored: data.ignored,
+                    latest: data.latest,
+                })
+                .collect(),
+        })
+        .collect())
+}
+
+pub fn parse_base_config(content: &str) -> Result<BaseConfig, String> {
+    let mut cfg: BaseConfig =
+        serde_json::from_str(content).map_err(|e| format!("Broken JSON base file: {}", e))?;
+
+    let entries = std::mem::take(&mut cfg.paths);
+    cfg.paths = normalize_paths(entries);
+
+    Ok(cfg)
+}
+
+pub fn normalize_paths(entries: Vec<PathEntry>) -> Vec<PathEntry> {
+    let mut result: Vec<PathEntry> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+
+    for e in entries {
+        match index.get(&e.path) {
+            Some(&i) => {
+                let dst = &mut result[i];
+                for f in e.files {
+                    if !dst.files.contains(&f) {
+                        dst.files.push(f);
+                    }
+                }
+                for f in e.ignored {
+                    if !dst.ignored.contains(&f) {
+                        dst.ignored.push(f);
+                    }
+                }
+                if dst.latest.is_null() && !e.latest.is_null() {
+                    dst.latest = e.latest;
+                }
+            }
+            None => {
+                index.insert(e.path.clone(), result.len());
+                result.push(e);
+            }
+        }
+    }
+
+    result
+}
+
+// =========================
+// LOAD / SAVE
+// =========================
+
+fn bases_dir() -> Result<PathBuf, String> {
+    let appdata = env::var("APPDATA").map_err(|_| "APPDATA not found.".to_string())?;
+    Ok(PathBuf::from(appdata).join("LogTools").join("bases"))
+}
+
+pub fn load_log(name: &str) -> Result<BaseConfig, String> {
+    let path = bases_dir()?.join(name).join(format!("{}.json", name));
 
     let content = fs::read_to_string(&path)
         .map_err(|_| format!("Base '{}' not found: {}", name, path.display()))?;
 
-    let json: HashMap<String, Value> =
-        serde_json::from_str(&content).map_err(|e| format!("Broken JSON base file: {}", e))?;
-    Ok(json)
+    parse_base_config(&content)
+}
+
+pub fn save_log(name: &str, config: &BaseConfig) -> Result<(), String> {
+    let dir = bases_dir()?.join(name);
+
+    fs::create_dir_all(&dir).map_err(|e| format!("Cannot create base dir: {}", e))?;
+
+    let path = dir.join(format!("{}.json", name));
+    let content =
+        serde_json::to_string_pretty(config).map_err(|e| format!("Serialize error: {}", e))?;
+
+    fs::write(&path, content).map_err(|e| format!("Cannot write base config: {}", e))
 }
 
 pub fn get_zst_path(name: &str) -> Result<String, String> {
-    let appdata = env::var("APPDATA").map_err(|_| "APPDATA not found.".to_string())?;
-
-    let mut path = PathBuf::from(appdata);
-    path.push("LogTools");
-    path.push("bases");
-    path.push(name);
-    path.push(format!("{}.zst", name));
-
+    let path = bases_dir()?.join(name).join(format!("{}.zst", name));
     Ok(path.to_string_lossy().to_string())
 }
+
+// =========================
+// LIST BASES
+// =========================
 
 #[derive(Debug, Clone)]
 pub struct BaseInfo {
@@ -41,11 +235,7 @@ pub struct BaseInfo {
 }
 
 pub fn list_bases() -> Result<Vec<BaseInfo>, String> {
-    let appdata = env::var("APPDATA").map_err(|_| "APPDATA not found.".to_string())?;
-
-    let mut bases_path = PathBuf::from(appdata);
-    bases_path.push("LogTools");
-    bases_path.push("bases");
+    let bases_path = bases_dir()?;
 
     if !bases_path.exists() {
         return Ok(Vec::new());
@@ -53,7 +243,8 @@ pub fn list_bases() -> Result<Vec<BaseInfo>, String> {
 
     let mut bases = Vec::new();
 
-    let entries = fs::read_dir(&bases_path).map_err(|e| format!("Failed to read bases dir: {}", e))?;
+    let entries =
+        fs::read_dir(&bases_path).map_err(|e| format!("Failed to read bases dir: {}", e))?;
 
     for entry in entries {
         let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
@@ -64,35 +255,14 @@ pub fn list_bases() -> Result<Vec<BaseInfo>, String> {
             let json_path = path.join(format!("{}.json", name));
 
             if json_path.exists() {
-                if let Ok(content) = fs::read_to_string(&json_path) {
-                    if let Ok(json) = serde_json::from_str::<Value>(&content) {
-                        let lines = json.get("lines").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                        
-                        let paths_count = json.get("paths")
-                            .and_then(|p| p.as_array())
-                            .map(|a| a.len())
-                            .unwrap_or(0);
-
-                        let creation_time = json.get("time")
-                            .and_then(|t| t.get("creation_unix"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-
-                        let last_edit_time = json.get("time")
-                            .and_then(|t| t.get("edit_unix"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-
-                        bases.push(BaseInfo {
-                            name,
-                            lines,
-                            paths_count,
-                            creation_time,
-                            last_edit_time,
-                        });
-                    }
+                if let Ok(cfg) = load_log(&name) {
+                    bases.push(BaseInfo {
+                        name,
+                        lines: cfg.lines as usize,
+                        paths_count: cfg.paths.len(),
+                        creation_time: cfg.time.creation_unix,
+                        last_edit_time: cfg.time.edit_unix,
+                    });
                 }
             }
         }
@@ -129,8 +299,15 @@ pub fn print_bases_table(bases: &[BaseInfo]) {
 
     let header = format!(
         "{:<NAME_W$} {:>LINES_W$} {:>PATHS_W$} {:<TIME_W$} {:<TIME_W$}",
-        "NAME", "LINES", "PATHS", "CREATED", "EDITED",
-        NAME_W = NAME_W, LINES_W = LINES_W, PATHS_W = PATHS_W, TIME_W = TIME_W
+        "NAME",
+        "LINES",
+        "PATHS",
+        "CREATED",
+        "EDITED",
+        NAME_W = NAME_W,
+        LINES_W = LINES_W,
+        PATHS_W = PATHS_W,
+        TIME_W = TIME_W
     );
 
     let separator = "─".repeat(header.len());
@@ -155,7 +332,10 @@ pub fn print_bases_table(bases: &[BaseInfo]) {
             base.paths_count,
             created,
             edited,
-            NAME_W = NAME_W, LINES_W = LINES_W, PATHS_W = PATHS_W, TIME_W = TIME_W
+            NAME_W = NAME_W,
+            LINES_W = LINES_W,
+            PATHS_W = PATHS_W,
+            TIME_W = TIME_W
         );
     }
 

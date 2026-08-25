@@ -266,7 +266,7 @@ pub fn search_async(
     let query = query.to_string();
     let progress = Arc::new(ParseProgress::new());
 
-    let max_lines: u64 = config.get("lines").and_then(|v| v.as_u64()).unwrap_or(0);
+    let max_lines: u64 = config.lines;
 
     const MAX_CAPACITY: usize = 10_000;
 
