@@ -106,17 +106,9 @@ pub fn process_reader<R: Read>(
         }
 
         if carry.is_empty() {
-            // Fast path: no partial line pending, parse straight from the
-            // read buffer without any copying.
             match buf[..n].iter().rposition(|&b| b == b'\n') {
                 Some(pos) => {
-                    process_buffer(
-                        &buf[..=pos],
-                        base_day,
-                        force_ansi,
-                        &mut result,
-                        &mut stats,
-                    );
+                    process_buffer(&buf[..=pos], base_day, force_ansi, &mut result, &mut stats);
                     let tail = &buf[pos + 1..n];
                     if !tail.is_empty() {
                         carry.extend_from_slice(tail);
@@ -128,7 +120,13 @@ pub fn process_reader<R: Read>(
             carry.extend_from_slice(&buf[..n]);
 
             if let Some(pos) = carry.iter().rposition(|&b| b == b'\n') {
-                process_buffer(&carry[..=pos], base_day, force_ansi, &mut result, &mut stats);
+                process_buffer(
+                    &carry[..=pos],
+                    base_day,
+                    force_ansi,
+                    &mut result,
+                    &mut stats,
+                );
                 carry.drain(..=pos);
             }
         }
@@ -167,11 +165,8 @@ pub fn process_file_plain(
     file_path: &str,
     start_line: usize,
 ) -> std::io::Result<(Vec<(i64, String)>, ErrorStats, usize, String)> {
-    // Single read of the file: hash, parsing and line counting all work on the
-    // same in-memory buffer (previously the file was read three times).
-    let file_bytes = std::fs::read(file_path).map_err(|e| {
-        std::io::Error::new(e.kind(), format!("Failed to read file: {}", e))
-    })?;
+    let file_bytes = std::fs::read(file_path)
+        .map_err(|e| std::io::Error::new(e.kind(), format!("Failed to read file: {}", e)))?;
 
     let mut hasher = Sha256::new();
     hasher.update(&file_bytes);
@@ -180,7 +175,10 @@ pub fn process_file_plain(
     let base_day = match tools::file_modified_days_local(file_path) {
         Ok(d) => d,
         Err(e) => {
-            return Err(std::io::Error::new(e.kind(), format!("Failed to get file date: {}", e)));
+            return Err(std::io::Error::new(
+                e.kind(),
+                format!("Failed to get file date: {}", e),
+            ));
         }
     };
 
@@ -382,4 +380,3 @@ fn to_unix_days(y: i32, m: u32, d: u32) -> i64 {
 
     era * 146097 + doe - 719468
 }
-

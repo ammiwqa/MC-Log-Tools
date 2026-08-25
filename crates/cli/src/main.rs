@@ -21,7 +21,11 @@ fn format_error_stats(stats: &lt_core::ErrorStats) -> String {
 }
 
 #[derive(Parser)]
-#[command(name = "lt3", version = "1.0", about = "MC Log-tools")]
+#[command(
+    name = "logtools",
+    version = "1.0",
+    about = "Minecraft LogTools (for server and client logs)"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -29,60 +33,95 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Create a new base from Minecraft log directories
     #[command(aliases = ["cb", "create"])]
     CreateBase {
+        /// Name of the new base
         #[arg(required = true, value_name = "NAME")]
         name: String,
 
+        /// Directories with logs (*.log.gz, latest.log)
         #[arg(value_name = "PATH")]
         paths: Vec<String>,
 
+        /// Read paths from text file (one per line, '#' comments)
         #[arg(short, long, value_name = "FILE")]
         from_file: Option<String>,
     },
 
+    /// Search for text in a base (supports & | - ! parens and <globs>)
     #[command(aliases = ["find", "s"])]
     Search {
+        /// Base to search
         #[arg(required = true, value_name = "BASE")]
         base_name: String,
 
+        /// Text to search for (supports & | - ! parens and <globs>)
         #[arg(required = true, value_name = "TEXT")]
         text: String,
     },
 
-    #[command(aliases = ["update", "u"])]
+    /// Update a base if it changed
+    #[command(aliases = ["update", "u", "ub"])]
     UpdateBase {
+        /// Base to update
         #[arg(required = true, value_name = "BASE")]
         name: String,
     },
 
+    /// List all bases
     #[command(aliases = ["list", "ls", "l"])]
     ListBases,
 
-    #[command(aliases = ["disc", "d"])]
+    /// Find all dirs with Minecraft logs and write them to a file for --from-file.
+    /// Using Everything (SDK DLL or es.exe) if available for a whole-PC scan.
+    #[command(aliases = ["disc", "d"], verbatim_doc_comment)]
     Discover {
+        /// Root directory to scan (default: ~ / user_home). Ignored if Everything used.
         root: Option<String>,
 
+        /// Output file (default: %APPDATA%\\logtools\\results\\mc_log_dirs.txt)
         #[arg(short, long, value_name = "FILE")]
         out: Option<String>,
 
+        /// Path to Everything64.dll or es.exe if not found automatically
         #[arg(long, value_name = "EXE")]
         es: Option<String>,
 
+        /// Skip Everything even if it is available
         #[arg(long)]
         no_everything: bool,
     },
 
+    /// Set / show / list config parameters.
+    ///
+    /// Set:
+    ///   logtools config <param> <var>
+    ///
+    /// Show one:
+    ///   logtools config <param>
+    ///
+    /// List all:
+    ///   logtools config
+    ///
+    /// Known parameters:
+    ///   everything_dll  - path to Everything64.dll for whole-PC discover
+    ///   confirm_delete  - ask before deleting a base (true/false, default true)
+    #[command(verbatim_doc_comment)]
     Config {
+        /// Parameter name
         #[arg(value_name = "PARAM")]
         param: Option<String>,
 
+        /// Value to set
         #[arg(value_name = "VAR")]
         var: Option<String>,
     },
 
+    /// Delete a base (asks for confirmation unless confirm_delete=false in config)
     #[command(aliases = ["del", "rm"])]
     Delete {
+        /// Base to delete
         #[arg(required = true, value_name = "NAME")]
         name: String,
 
@@ -420,10 +459,7 @@ fn main() {
                 .unwrap_or(true);
 
             if confirm_enabled && !yes {
-                println!(
-                    "   Delete base '{}' (config + logs)? [y/N]",
-                    name
-                );
+                println!("   Delete base '{}' (config + logs)? [y/N]", name);
                 let mut answer = String::new();
                 if std::io::stdin().read_line(&mut answer).is_err() {
                     return;
@@ -436,11 +472,7 @@ fn main() {
             }
 
             match read_base_info::delete_base(&name) {
-                Ok(()) => println!(
-                    "   {} {}",
-                    bright_green_style.apply_to("Deleted"),
-                    name
-                ),
+                Ok(()) => println!("   {} {}", bright_green_style.apply_to("Deleted"), name),
                 Err(e) => eprintln!("Error deleting base: {}", e),
             }
         }
@@ -507,7 +539,7 @@ fn main() {
 
                     if !no_everything {
                         eprintln!(
-                            "   Tip: install Everything (https://www.voidtools.com/) and Everething SDK for an instant whole-PC scan.\n   Then set the DLL path: lt3 config everything_dll \"<path to Everything64.dll>\""
+                            "   Tip: install Everything (https://www.voidtools.com/) and Everething SDK for an instant whole-PC scan.\n   Then set the DLL path: logtools config everything_dll \"<path to Everything64.dll>\""
                         );
                     }
 
@@ -528,7 +560,7 @@ fn main() {
                 start.elapsed().as_secs_f32()
             );
             println!(
-                "   Create a global base: lt3 cb <NAME> --from-file \"{}\"",
+                "   Create a global base: logtools cb <NAME> --from-file \"{}\"",
                 out_path
             );
         }
