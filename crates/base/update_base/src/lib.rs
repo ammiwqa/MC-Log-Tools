@@ -78,10 +78,26 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
     let mut all_new_gz_logs = Vec::<String>::new();
     let mut latest_checks = Vec::<(String, String, usize)>::new();
 
-    for entry in &mut cfg.paths {
-        let source_path = entry.path.clone();
+    if !cfg.paths.is_empty() {
+        progress.set_message("Scanning");
+        progress.set_total(cfg.paths.len() as u64);
+    }
 
-        let current_gz_files = get_logfiles::find_log_files(&source_path, false, ".log.gz", false);
+    let discovered: Vec<(Vec<String>, Vec<String>)> = cfg
+        .paths
+        .par_iter()
+        .map(|entry| {
+            let gz =
+                get_logfiles::find_log_files(&entry.path, false, ".log.gz", false);
+            let latest =
+                get_logfiles::find_log_files(&entry.path, true, "latest.log", true);
+            progress.inc(1);
+            (gz, latest)
+        })
+        .collect();
+
+    for (entry, (current_gz_files, latest_files)) in cfg.paths.iter_mut().zip(discovered) {
+        let source_path = entry.path.clone();
 
         let new_gz_files: Vec<String> = current_gz_files
             .into_iter()
@@ -101,11 +117,15 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
 
         let stored = entry.latest_flat();
 
-        for latest_file in get_logfiles::find_log_files(&source_path, true, "latest.log", true) {
+        for latest_file in latest_files {
             if known_latest_files.insert(latest_file.clone()) {
                 latest_checks.push((latest_file, stored.hash.clone(), stored.last_line as usize));
             }
         }
+    }
+
+    if !cfg.paths.is_empty() {
+        progress.finish();
     }
 
     if !latest_checks.is_empty() {
@@ -207,7 +227,13 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
     }
 
     let zst_path = get_zst_path(name)?;
-    let existing_logs = read_existing_logs(&zst_path)?;
+
+    progress.set_message("Reading existing");
+    progress.set_total(cfg.lines);
+
+    let existing_logs = read_existing_logs_with_progress(&zst_path, progress)?;
+
+    progress.finish();
 
     let existing_count = existing_logs.len();
 
@@ -274,7 +300,10 @@ fn system_time_secs() -> u64 {
         .as_secs()
 }
 
-fn read_existing_logs(zst_path: &str) -> io::Result<Vec<(i64, String)>> {
+fn read_existing_logs_with_progress<P: ProgressReporter + ?Sized>(
+    zst_path: &str,
+    progress: &P,
+) -> io::Result<Vec<(i64, String)>> {
     use std::io::{BufRead, BufReader};
     use zstd::stream::read::Decoder;
 
@@ -296,6 +325,8 @@ fn read_existing_logs(zst_path: &str) -> io::Result<Vec<(i64, String)>> {
         if let Ok(ts) = ts_str.parse::<i64>() {
             logs.push((ts, line[13..].to_owned()));
         }
+
+        progress.inc(1);
     }
 
     Ok(logs)
