@@ -147,17 +147,18 @@ fn read_paths_from_file<P: AsRef<Path>>(file_path: P) -> Result<Vec<String>, std
 fn make_bar(prefix: &str) -> ProgressBar {
     let bright_cyan_style = Style::new().cyan().bold();
     let pb = ProgressBar::new(1);
+
     pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(50));
     pb.set_style(
         ProgressStyle::default_bar()
-            .template(
-                "   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}] {msg:.white}",
-            )
+            .template("   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}]")
             .unwrap()
             .progress_chars("=>-"),
     );
+
     pb.set_prefix(format!("{}", bright_cyan_style.apply_to(prefix)));
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
     pb
 }
 
@@ -166,15 +167,21 @@ fn spawn_drawer(
     rx: std::sync::mpsc::Receiver<CoreEvent>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
+        let bright_cyan_style = Style::new().cyan().bold();
+
         while let Ok(ev) = rx.recv() {
             match ev {
                 CoreEvent::Progress { pos, total } => {
                     pb.set_length(total);
                     pb.set_position(pos);
                 }
-                CoreEvent::Message(msg) => pb.set_message(msg),
+
+                CoreEvent::Message(msg) => {
+                    pb.set_prefix(format!("{}", bright_cyan_style.apply_to(msg)));
+                }
             }
         }
+
         pb.finish_and_clear();
     })
 }
@@ -233,6 +240,7 @@ fn main() {
                             result.duplicate_files
                         );
                     }
+
                     if result.gz_files > 0 {
                         println!(
                             "   {} {} files -> {} lines {}",
@@ -242,6 +250,7 @@ fn main() {
                             format_error_stats(&result.gz_errors)
                         );
                     }
+
                     if result.latest_files > 0 {
                         println!(
                             "   {} {} latest files -> {} lines {}",
@@ -251,6 +260,7 @@ fn main() {
                             format_error_stats(&result.latest_errors)
                         );
                     }
+
                     println!(
                         "   {} {} lines -> {}",
                         bright_green_style.apply_to("Writing"),
@@ -258,6 +268,7 @@ fn main() {
                         name
                     );
                 }
+
                 Err(e) => {
                     drop(tx);
                     let _ = drawer.join();
@@ -304,6 +315,7 @@ fn main() {
                     return;
                 }
             };
+
             let results_len = results.len();
 
             search_pb.set_position(max_lines);
@@ -337,6 +349,7 @@ fn main() {
             }
 
             write_pb.finish_and_clear();
+
             println!(
                 "   {} {} founds -> ({})",
                 bright_green_style.apply_to("Writing"),
@@ -381,6 +394,7 @@ fn main() {
                             format_error_stats(&result.gz_errors)
                         );
                     }
+
                     if result.new_latest_files > 0 {
                         println!(
                             "   {} {} latest files -> {} lines {}",
@@ -390,6 +404,7 @@ fn main() {
                             format_error_stats(&result.latest_errors)
                         );
                     }
+
                     println!(
                         "   {} {} total lines -> {}",
                         bright_green_style.apply_to("Writing"),
@@ -397,6 +412,7 @@ fn main() {
                         name
                     );
                 }
+
                 Err(e) => {
                     drop(tx);
                     let _ = drawer.join();
@@ -417,6 +433,7 @@ fn main() {
         Commands::Config { param, var } => match (param, var) {
             (None, _) => {
                 let map = tools::config::load_config();
+
                 if map.is_empty() {
                     println!("No config parameters set.");
                 } else {
@@ -425,12 +442,15 @@ fn main() {
                     }
                 }
             }
+
             (Some(param), None) => match tools::config::get_config_param(&param) {
                 Some(value) => println!("{}", value),
                 None => eprintln!("Parameter '{}' is not set", param),
             },
+
             (Some(param), Some(var)) => {
                 let mut map = tools::config::load_config();
+
                 map.insert(
                     param.clone(),
                     serde_json::Value::String(var.trim().to_string()),
@@ -445,6 +465,7 @@ fn main() {
                             var
                         );
                     }
+
                     Err(e) => {
                         eprintln!("Error saving config: {}", e);
                         std::process::exit(1);
@@ -460,11 +481,15 @@ fn main() {
 
             if confirm_enabled && !yes {
                 println!("   Delete base '{}' (config + logs)? [y/N]", name);
+
                 let mut answer = String::new();
+
                 if std::io::stdin().read_line(&mut answer).is_err() {
                     return;
                 }
+
                 let answer = answer.trim().to_lowercase();
+
                 if answer != "y" && answer != "yes" {
                     println!("   Cancelled");
                     return;
@@ -472,7 +497,9 @@ fn main() {
             }
 
             match read_base_info::delete_base(&name) {
-                Ok(()) => println!("   {} {}", bright_green_style.apply_to("Deleted"), name),
+                Ok(()) => {
+                    println!("   {} {}", bright_green_style.apply_to("Deleted"), name)
+                }
                 Err(e) => eprintln!("Error deleting base: {}", e),
             }
         }
@@ -488,32 +515,33 @@ fn main() {
             });
 
             let start = std::time::Instant::now();
-
             let mut discovery_result = None;
 
             if !no_everything {
                 match discovery::discover_everything(es.as_ref()) {
                     Ok(d) => {
                         let source_str = match d.source {
-                            discovery::DiscoverSource::Sdk => {
-                                format!("Everything SDK")
-                            }
-                            discovery::DiscoverSource::Cli => format!("Everything CLI"),
+                            discovery::DiscoverSource::Sdk => "Everything SDK".to_string(),
+                            discovery::DiscoverSource::Cli => "Everything CLI".to_string(),
                             discovery::DiscoverSource::Walk => unreachable!(),
                         };
+
                         println!(
                             "   {} {}",
                             bright_cyan_style.apply_to("Scanning"),
                             source_str
                         );
+
                         discovery_result = Some(d.dirs);
                     }
+
                     Err(_e) => {}
                 }
             }
 
             let found = match discovery_result {
                 Some(dirs) => dirs,
+
                 None => {
                     let scan_root = match root {
                         Some(r) => PathBuf::from(r),
@@ -539,7 +567,7 @@ fn main() {
 
                     if !no_everything {
                         eprintln!(
-                            "   Tip: install Everything (https://www.voidtools.com/) and Everething SDK for an instant whole-PC scan.\n   Then set the DLL path: logtools config everything_dll \"<path to Everything64.dll>\""
+                            "   Tip: install Everything (https://www.voidtools.com/) and Everything SDK for an instant whole-PC scan.\n   Then set the DLL path: logtools config everything_dll \"<path to Everything64.dll>\""
                         );
                     }
 
@@ -559,6 +587,7 @@ fn main() {
                 out_path,
                 start.elapsed().as_secs_f32()
             );
+
             println!(
                 "   Create a global base: logtools cb <NAME> --from-file \"{}\"",
                 out_path

@@ -5,9 +5,11 @@ use read_base_info::{get_zst_path, load_log, save_log, LatestInfo};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{self, BufReader, Read};
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use zip_writer::write_logs_to_zstd_with_progress;
+
+const HASH_BUFFER_SIZE: usize = 1024 * 1024;
 
 fn get_dir(path: &str) -> String {
     PathBuf::from(path)
@@ -31,9 +33,9 @@ fn compute_file_hash(path: &str) -> io::Result<String> {
     #[cfg(not(windows))]
     let file = File::open(path)?;
 
-    let mut reader = BufReader::with_capacity(1024 * 1024, file);
+    let mut reader = BufReader::with_capacity(HASH_BUFFER_SIZE, file);
     let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 1024 * 1024];
+    let mut buffer = [0u8; HASH_BUFFER_SIZE];
 
     loop {
         let bytes_read = reader.read(&mut buffer)?;
@@ -43,6 +45,117 @@ fn compute_file_hash(path: &str) -> io::Result<String> {
         }
 
         hasher.update(&buffer[..bytes_read]);
+    }
+
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn skip_gzip_string(file: &mut File) -> io::Result<()> {
+    let mut buffer = [0u8; 256];
+
+    loop {
+        let n = file.read(&mut buffer)?;
+
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Unterminated gzip header string",
+            ));
+        }
+
+        if buffer[..n].contains(&0) {
+            return Ok(());
+        }
+    }
+}
+
+
+fn compute_gzip_payload_hash(path: &str) -> io::Result<String> {
+    #[cfg(windows)]
+    let mut file = {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        File::options()
+            .read(true)
+            .share_mode(0x0000_0001 | 0x0000_0002 | 0x0000_0004)
+            .open(path)?
+    };
+
+    #[cfg(not(windows))]
+    let mut file = File::open(path)?;
+
+    let file_len = file.metadata()?.len();
+
+    if file_len < 18 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Gzip file is too small",
+        ));
+    }
+
+    let mut header = [0u8; 10];
+    file.read_exact(&mut header)?;
+
+    if header[0] != 0x1f || header[1] != 0x8b || header[2] != 8 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Invalid gzip header",
+        ));
+    }
+
+    let flags = header[3];
+
+    if flags & 0xE0 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Reserved gzip flags are set",
+        ));
+    }
+
+    if flags & 0x04 != 0 {
+        let mut xlen = [0u8; 2];
+        file.read_exact(&mut xlen)?;
+
+        let extra_len = u16::from_le_bytes(xlen) as u64;
+
+        file.seek(SeekFrom::Current(i64::try_from(extra_len).map_err(
+            |_| io::Error::new(io::ErrorKind::InvalidData, "Extra field too large"),
+        )?))?;
+    }
+
+    if flags & 0x08 != 0 {
+        skip_gzip_string(&mut file)?;
+    }
+
+    if flags & 0x10 != 0 {
+        skip_gzip_string(&mut file)?;
+    }
+
+    if flags & 0x02 != 0 {
+        file.seek(SeekFrom::Current(2))?;
+    }
+
+    let data_start = file.stream_position()?;
+    let data_end = file_len - 8;
+
+    if data_start > data_end {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Invalid gzip structure",
+        ));
+    }
+
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; HASH_BUFFER_SIZE];
+    let mut remaining = data_end - data_start;
+
+    while remaining > 0 {
+        let to_read = remaining.min(buffer.len() as u64) as usize;
+
+        file.read_exact(&mut buffer[..to_read])?;
+        hasher.update(&buffer[..to_read]);
+
+        remaining -= to_read as u64;
     }
 
     Ok(hex::encode(hasher.finalize()))
@@ -87,32 +200,32 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
         .paths
         .par_iter()
         .map(|entry| {
-            let gz =
-                get_logfiles::find_log_files(&entry.path, false, ".log.gz", false);
-            let latest =
-                get_logfiles::find_log_files(&entry.path, true, "latest.log", true);
+            let gz = get_logfiles::find_log_files(&entry.path, false, ".log.gz", false);
+
+            let latest = get_logfiles::find_log_files(&entry.path, true, "latest.log", true);
+
             progress.inc(1);
+
             (gz, latest)
         })
         .collect();
 
-    for (entry, (current_gz_files, latest_files)) in cfg.paths.iter_mut().zip(discovered) {
+    let mut candidates: Vec<(usize, String, String)> = Vec::new();
+
+    for (index, (entry, (current_gz_files, latest_files))) in
+        cfg.paths.iter_mut().zip(discovered).enumerate()
+    {
         let source_path = entry.path.clone();
 
-        let new_gz_files: Vec<String> = current_gz_files
-            .into_iter()
-            .filter(|file| known_gz_files.insert(file.clone()))
-            .collect();
-
-        if !new_gz_files.is_empty() {
-            all_new_gz_logs.extend(new_gz_files.iter().map(|file| {
-                Path::new(&source_path)
-                    .join(file)
+        for file in current_gz_files {
+            if known_gz_files.insert(file.clone()) {
+                let full_path = Path::new(&source_path)
+                    .join(&file)
                     .to_string_lossy()
-                    .into_owned()
-            }));
+                    .into_owned();
 
-            entry.files.extend(new_gz_files);
+                candidates.push((index, file, full_path));
+            }
         }
 
         let stored = entry.latest_flat();
@@ -128,31 +241,71 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
         progress.finish();
     }
 
+    candidates.sort_by(|a, b| a.2.cmp(&b.2));
+
+    progress.set_message("Hashing gzip files");
+    progress.set_total(candidates.len() as u64);
+
+    let hashed: Vec<(usize, String, String, io::Result<String>)> = candidates
+        .into_par_iter()
+        .map(|(index, relative_path, full_path)| {
+            let hash = compute_gzip_payload_hash(&full_path);
+
+            progress.inc(1);
+
+            (index, relative_path, full_path, hash)
+        })
+        .collect();
+
+    progress.finish();
+
+    let mut seen_hashes = HashSet::<String>::new();
+
+    for (index, relative_path, full_path, result) in hashed {
+        match result {
+            Ok(hash) => {
+                if seen_hashes.insert(hash) {
+                    all_new_gz_logs.push(full_path);
+                    cfg.paths[index].files.push(relative_path);
+                } else {
+                    cfg.paths[index].ignored.push(relative_path);
+                }
+            }
+
+            Err(err) => {
+                eprintln!(
+                    "Failed to hash gzip file '{}': {}. Keeping file.",
+                    full_path, err
+                );
+
+                all_new_gz_logs.push(full_path);
+                cfg.paths[index].files.push(relative_path);
+            }
+        }
+    }
+
     if !latest_checks.is_empty() {
-        progress.set_message("Checking hashes");
+        progress.set_message("Checking latest hashes");
         progress.set_total(latest_checks.len() as u64);
     }
 
     let latest_results: Vec<(String, usize)> = latest_checks
         .par_iter()
-        .filter_map(
-            |(path, stored_hash, last_line)| {
-                let result = match compute_file_hash(path) {
-                    Ok(current_hash) if current_hash != *stored_hash => {
-                        Some((path.clone(), *last_line))
-                    }
+        .filter_map(|(path, stored_hash, last_line)| {
+            let result = match compute_file_hash(path) {
+                Ok(current_hash) if current_hash != *stored_hash => {
+                    Some((path.clone(), *last_line))
+                }
+                Ok(_) => None,
+                Err(err) => {
+                    eprintln!("Failed to hash '{}': {}", path, err);
+                    None
+                }
+            };
 
-                    Ok(_) => None,
-
-                    Err(err) => {
-                        eprintln!("Failed to hash '{}': {}", path, err);
-                        None
-                    }
-                };
-                progress.inc(1);
-                result
-            },
-        )
+            progress.inc(1);
+            result
+        })
         .collect();
 
     if !latest_checks.is_empty() {
