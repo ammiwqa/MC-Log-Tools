@@ -2,14 +2,16 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::time::Instant;
 
 use log_parser::ErrorStats;
 use progress::ProgressReporter;
+use rayon::prelude::*;
 use read_base_info::{LatestInfo, PathEntry, TimeInfo, save_log};
-use sha2::{Digest, Sha256};
+use xxhash_rust::xxh3::Xxh3;
 
-const HASH_BUFFER_SIZE: usize = 64 * 1024;
+const HASH_BUFFER_SIZE: usize = 1024 * 1024;
 const DEBUG_HASH_EVERY: usize = 100;
 const DEBUG: bool = false;
 
@@ -46,6 +48,9 @@ fn file_name_of(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
+/// Пропускает строку с нулевым терминатором в gzip-заголовке.
+///
+/// Читаем по одному байту, чтобы случайно не прочитать часть payload.
 fn skip_gzip_string(file: &mut File) -> io::Result<()> {
     let mut byte = [0u8; 1];
 
@@ -58,7 +63,11 @@ fn skip_gzip_string(file: &mut File) -> io::Result<()> {
     }
 }
 
-fn compute_gzip_payload_hash(path: &Path) -> io::Result<String> {
+/// Вычисляет быстрый XXH3-хеш gzip payload.
+///
+/// Не включает gzip-заголовок и последние 8 байт trailer.
+/// Поддерживается один gzip-member на файл.
+fn compute_gzip_payload_hash(path: &Path) -> io::Result<u64> {
     let mut file = File::open(path)?;
     let file_len = file.metadata()?.len();
 
@@ -81,6 +90,7 @@ fn compute_gzip_payload_hash(path: &Path) -> io::Result<String> {
         ));
     }
 
+    // FEXTRA
     if flags & 0x04 != 0 {
         let mut xlen = [0u8; 2];
         file.read_exact(&mut xlen)?;
@@ -89,14 +99,17 @@ fn compute_gzip_payload_hash(path: &Path) -> io::Result<String> {
         file.seek(SeekFrom::Current(xlen))?;
     }
 
+    // FNAME
     if flags & 0x08 != 0 {
         skip_gzip_string(&mut file)?;
     }
 
+    // FCOMMENT
     if flags & 0x10 != 0 {
         skip_gzip_string(&mut file)?;
     }
 
+    // FHCRC
     if flags & 0x02 != 0 {
         file.seek(SeekFrom::Current(2))?;
     }
@@ -106,15 +119,20 @@ fn compute_gzip_payload_hash(path: &Path) -> io::Result<String> {
     if file_len < payload_start + 8 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "Gzip file is too short",
+            format!(
+                "Gzip file is too short: file_len={}, payload_start={}, remaining={}",
+                file_len,
+                payload_start,
+                file_len.saturating_sub(payload_start)
+            ),
         ));
     }
 
     let payload_len = file_len - payload_start - 8;
 
-    let mut hasher = Sha256::new();
-    let mut remaining = payload_len;
+    let mut hasher = Xxh3::new();
     let mut buffer = vec![0u8; HASH_BUFFER_SIZE];
+    let mut remaining = payload_len;
 
     while remaining > 0 {
         let to_read = remaining.min(buffer.len() as u64) as usize;
@@ -125,17 +143,7 @@ fn compute_gzip_payload_hash(path: &Path) -> io::Result<String> {
         remaining -= to_read as u64;
     }
 
-    let hash = hex::encode(hasher.finalize());
-
-    if DEBUG {
-        eprintln!(
-            "[GZIP HASH] Hashed {} bytes: {}",
-            payload_len,
-            path.display()
-        );
-    }
-
-    Ok(hash)
+    Ok(hasher.digest())
 }
 
 pub fn create_base<P: ProgressReporter + ?Sized>(
@@ -157,10 +165,14 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
     let mut entries_by_path: HashMap<String, PathEntry> = HashMap::new();
 
     let mut seen_full_paths: HashSet<String> = HashSet::new();
-    let mut seen_gz_hashes: HashSet<String> = HashSet::new();
+    let mut seen_gz_hashes: HashSet<u64> = HashSet::new();
     let mut seen_latest_files: HashSet<String> = HashSet::new();
 
     let mut duplicate_files = 0usize;
+
+    // ---------------------------------------------------------
+    // STEP 1: поиск gzip-файлов
+    // ---------------------------------------------------------
 
     debug_stage("STEP 1: discovering .log.gz files");
 
@@ -172,8 +184,6 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
     let mut total_gz_candidates = 0usize;
 
     for path in &paths {
-        debug_stage(&format!("Discovering gzip files in '{}'", path));
-
         let full_files = get_logfiles::find_log_files(path, true, ".log.gz", false);
 
         total_gz_candidates += full_files.len();
@@ -185,7 +195,6 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
         ));
 
         files_by_path.push((path.clone(), full_files));
-
         progress.inc(1);
     }
 
@@ -194,22 +203,24 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
         total_gz_candidates
     ));
 
-    progress.set_message("Hashing gzip files");
-    progress.set_total(total_gz_candidates as u64);
+    // ---------------------------------------------------------
+    // STEP 2: подготовка списка заданий
+    // ---------------------------------------------------------
 
-    let mut processed_gz_candidates = 0usize;
+    progress.set_message("Preparing gzip files");
+
+    let mut candidates: Vec<(String, String, String)> = Vec::with_capacity(total_gz_candidates);
 
     for (path, full_files) in files_by_path {
         let entry = entries_by_path.entry(path.clone()).or_default();
         entry.path = path.clone();
 
         for full_path in full_files {
-            processed_gz_candidates += 1;
-
             let normalized_path = PathBuf::from(&full_path).to_string_lossy().into_owned();
 
             let short = file_name_of(&normalized_path);
 
+            // Повторяющиеся пути не требуется хешировать повторно.
             if !seen_full_paths.insert(normalized_path.clone()) {
                 duplicate_files += 1;
 
@@ -217,80 +228,144 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
                     entry.ignored.push(short);
                 }
 
-                progress.inc(1);
                 continue;
             }
 
-            if DEBUG
-                && (processed_gz_candidates % DEBUG_HASH_EVERY == 0 || processed_gz_candidates == 1)
-            {
-                debug_stage(&format!(
-                    "Hashing file {}/{}: {}",
-                    processed_gz_candidates, total_gz_candidates, normalized_path
-                ));
-            }
-
-            let hash_result = compute_gzip_payload_hash(Path::new(&normalized_path));
-
-            match hash_result {
-                Ok(hash) => {
-                    if !seen_gz_hashes.insert(hash) {
-                        duplicate_files += 1;
-
-                        if !entry.ignored.contains(&short) {
-                            entry.ignored.push(short);
-                        }
-
-                        debug_stage(&format!("DUPLICATE gzip: {}", normalized_path));
-
-                        progress.inc(1);
-                        continue;
-                    }
-                }
-                Err(err) => {
-                    eprintln!(
-                        "[create_base][WARNING] Failed to hash '{}': {}. \
-                         Keeping file.",
-                        normalized_path, err
-                    );
-                }
-            }
-
-            if !entry.files.contains(&short) {
-                entry.files.push(short);
-            }
-
-            all_logs.push(normalized_path);
-
-            progress.inc(1);
+            candidates.push((path.clone(), normalized_path, short));
         }
-
-        debug_stage(&format!(
-            "Finished directory '{}'; unique gzip files so far: {}, \
-             duplicates: {}",
-            path,
-            all_logs.len(),
-            duplicate_files
-        ));
     }
 
-    progress.set_message("Gzip deduplication completed");
+    let hash_total = candidates.len();
+
+    debug_stage(&format!(
+        "Prepared {} files for parallel hashing",
+        hash_total
+    ));
+
+    // ---------------------------------------------------------
+    // STEP 3: параллельное хеширование с живым прогрессом
+    // ---------------------------------------------------------
+    //
+    // Rayon хеширует файлы параллельно.
+    // Результаты передаются через канал главному потоку.
+    // progress.inc() вызывается только главным потоком,
+    // поэтому ProgressReporter не обязан быть Sync.
+
+    progress.set_message("Hashing gzip files");
+    progress.set_total(hash_total as u64);
+
+    let hash_start = Instant::now();
+
+    let (tx, rx) = mpsc::channel::<(usize, io::Result<u64>)>();
+
+    let mut hash_results: Vec<Option<io::Result<u64>>> =
+        std::iter::repeat_with(|| None).take(hash_total).collect();
+
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            candidates
+                .par_iter()
+                .enumerate()
+                .for_each_with(tx, |sender, (index, candidate)| {
+                    let result = compute_gzip_payload_hash(Path::new(&candidate.1));
+
+                    // Если получатель завершился, работу можно прекратить
+                    // только на уровне отправки; ошибка хеширования
+                    // обрабатывается ниже.
+                    let _ = sender.send((index, result));
+                });
+        });
+
+        for (completed, (index, result)) in rx.into_iter().enumerate() {
+            hash_results[index] = Some(result);
+
+            progress.inc(1);
+
+            if DEBUG && ((completed + 1) % DEBUG_HASH_EVERY == 0 || completed + 1 == hash_total) {
+                debug_stage(&format!("Hashed {}/{} files", completed + 1, hash_total));
+            }
+        }
+    });
+
+    debug_stage(&format!(
+        "Parallel hashing complete: {} files, elapsed={:?}",
+        hash_total,
+        hash_start.elapsed()
+    ));
+
+    // ---------------------------------------------------------
+    // STEP 4: дедупликация в исходном порядке
+    // ---------------------------------------------------------
+    //
+    // Порядок результатов сохраняется по индексу задания.
+    // Первый файл с данным хешем считается оригиналом.
+
+    progress.set_message("Deduplicating gzip files");
+
+    for ((path, normalized_path, short), hash_result) in
+        candidates.into_iter().zip(hash_results.into_iter())
+    {
+        let entry = entries_by_path.entry(path).or_default();
+
+        let hash_result = match hash_result {
+            Some(result) => result,
+            None => {
+                // Защитный случай: результат не был получен.
+                eprintln!(
+                    "[create_base][WARNING] Missing hash result for '{}'. Keeping file.",
+                    normalized_path
+                );
+
+                if !entry.files.contains(&short) {
+                    entry.files.push(short);
+                }
+
+                all_logs.push(normalized_path);
+                continue;
+            }
+        };
+
+        match hash_result {
+            Ok(hash) => {
+                if !seen_gz_hashes.insert(hash) {
+                    duplicate_files += 1;
+
+                    if !entry.ignored.contains(&short) {
+                        entry.ignored.push(short);
+                    }
+
+                    debug_stage(&format!("DUPLICATE gzip: {}", normalized_path));
+
+                    continue;
+                }
+            }
+            Err(err) => {
+                eprintln!(
+                    "[create_base][WARNING] Failed to hash '{}': {}. Keeping file.",
+                    normalized_path, err
+                );
+            }
+        }
+
+        if !entry.files.contains(&short) {
+            entry.files.push(short);
+        }
+
+        all_logs.push(normalized_path);
+    }
 
     let gz_files_count = all_logs.len();
 
     debug_stage(&format!(
-        "Deduplication complete: unique gzip files={}, duplicates={}",
+        "Gzip deduplication complete: unique={}, duplicates={}",
         gz_files_count, duplicate_files
     ));
 
-    let gz_files_count = all_logs.len();
+    // ---------------------------------------------------------
+    // STEP 5: поиск latest.log
+    // ---------------------------------------------------------
 
-    debug_stage(&format!(
-        "STEP 2 COMPLETE: unique gzip files={}, duplicates={}",
-        gz_files_count, duplicate_files
-    ));
-
-    debug_stage("STEP 3: scanning for latest.log");
+    debug_stage("STEP 5: scanning for latest.log");
 
     progress.set_message("Scanning latest.log files");
     progress.set_total(paths.len() as u64);
@@ -300,13 +375,6 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
             "Scanning latest.log {}/{}",
             dir_index + 1,
             paths.len()
-        ));
-
-        debug_stage(&format!(
-            "Scanning latest.log in directory {}/{}: {}",
-            dir_index + 1,
-            paths.len(),
-            path
         ));
 
         let latest_files = get_logfiles::find_log_files(path, true, "latest.log", true);
@@ -337,11 +405,15 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
     let latest_params_len = latest_params.len();
 
     debug_stage(&format!(
-        "STEP 3 COMPLETE: latest.log files={}",
+        "STEP 5 COMPLETE: latest.log files={}",
         latest_params_len
     ));
 
-    debug_stage(&format!("STEP 4: parsing {} gzip files", all_logs.len()));
+    // ---------------------------------------------------------
+    // STEP 6: парсинг gzip-файлов
+    // ---------------------------------------------------------
+
+    debug_stage(&format!("STEP 6: parsing {} gzip files", all_logs.len()));
 
     progress.set_message("Parsing gzip logs");
     progress.set_total(all_logs.len() as u64);
@@ -355,13 +427,17 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
     let parsed_gz_lines = logs.len();
 
     debug_stage(&format!(
-        "STEP 4 COMPLETE: parsed gzip lines={}, elapsed={:?}",
+        "STEP 6 COMPLETE: parsed gzip lines={}, elapsed={:?}",
         parsed_gz_lines,
         parse_gz_start.elapsed()
     ));
 
+    // ---------------------------------------------------------
+    // STEP 7: парсинг latest.log
+    // ---------------------------------------------------------
+
     debug_stage(&format!(
-        "STEP 5: parsing {} latest.log files",
+        "STEP 7: parsing {} latest.log files",
         latest_params_len
     ));
 
@@ -377,15 +453,14 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
     let parsed_latest_lines = logs_latest.len();
 
     debug_stage(&format!(
-        "STEP 5 COMPLETE: parsed latest lines={}, elapsed={:?}",
+        "STEP 7 COMPLETE: parsed latest lines={}, elapsed={:?}",
         parsed_latest_lines,
         parse_latest_start.elapsed()
     ));
 
-    debug_stage(&format!(
-        "STEP 6: building latest state from {} parameter records",
-        params.len()
-    ));
+    // ---------------------------------------------------------
+    // STEP 8: построение latest state
+    // ---------------------------------------------------------
 
     let mut latest_map: HashMap<String, LatestInfo> = HashMap::new();
 
@@ -407,29 +482,19 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
         }
     }
 
-    debug_stage(&format!(
-        "STEP 6 COMPLETE: latest state entries={}",
-        latest_map.len()
-    ));
-
-    debug_stage(&format!(
-        "STEP 7: merging {} gzip lines and {} latest lines",
-        logs.len(),
-        logs_latest.len()
-    ));
+    // ---------------------------------------------------------
+    // STEP 9: объединение и сортировка
+    // ---------------------------------------------------------
 
     logs.extend(logs_latest);
-
-    debug_stage(&format!("Sorting {} total log records", logs.len()));
-
     logs.sort_unstable_by_key(|x| x.0);
 
     let lines = logs.len();
     let now = system_time_secs();
 
-    debug_stage(&format!("STEP 7 COMPLETE: total records={}", lines));
-
-    debug_stage("STEP 8: building base configuration");
+    // ---------------------------------------------------------
+    // STEP 10: построение конфигурации
+    // ---------------------------------------------------------
 
     let cfg = read_base_info::BaseConfig {
         name: name.clone(),
@@ -452,31 +517,22 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
         paths: read_base_info::normalize_paths(entries_by_path.into_values().collect()),
     };
 
-    debug_stage("STEP 8 COMPLETE: base configuration built");
-
-    debug_stage("STEP 9: saving base metadata");
+    // ---------------------------------------------------------
+    // STEP 11: сохранение базы
+    // ---------------------------------------------------------
 
     progress.set_message("Writing logs");
     progress.set_total(lines as u64);
 
     save_log(&name, &cfg)?;
 
-    debug_stage("Base metadata saved");
-
     let zst_path = read_base_info::get_zst_path(&name)?;
-
-    debug_stage(&format!("Writing {} records to '{}'", logs.len(), zst_path));
 
     let write_start = Instant::now();
 
     zip_writer::write_logs_to_zstd_with_progress(&logs, &zst_path, progress)?;
 
     progress.finish();
-
-    debug_stage(&format!(
-        "STEP 9 COMPLETE: writing elapsed={:?}",
-        write_start.elapsed()
-    ));
 
     debug_stage(&format!(
         "SUCCESS: total elapsed={:?}, gzip files={}, gzip lines={}, \

@@ -5,11 +5,17 @@ use read_base_info::{get_zst_path, load_log, save_log, LatestInfo};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{self, BufReader, Read, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use xxhash_rust::xxh3::Xxh3;
 use zip_writer::write_logs_to_zstd_with_progress;
 
 const HASH_BUFFER_SIZE: usize = 1024 * 1024;
+
+// ------------------------------------------------------------
+// Utility functions
+// ------------------------------------------------------------
 
 fn get_dir(path: &str) -> String {
     PathBuf::from(path)
@@ -19,6 +25,8 @@ fn get_dir(path: &str) -> String {
         .into_owned()
 }
 
+/// SHA-256 оставлен для latest.log, поскольку сохранённые хеши
+/// в LatestInfo могут быть созданы именно этим алгоритмом.
 fn compute_file_hash(path: &str) -> io::Result<String> {
     #[cfg(windows)]
     let file = {
@@ -50,6 +58,9 @@ fn compute_file_hash(path: &str) -> io::Result<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
+/// Пропускает строку gzip-заголовка до нулевого терминатора.
+///
+/// Не допускает смещения позиции чтения за пределы строки.
 fn skip_gzip_string(file: &mut File) -> io::Result<()> {
     let mut buffer = [0u8; 256];
 
@@ -63,14 +74,23 @@ fn skip_gzip_string(file: &mut File) -> io::Result<()> {
             ));
         }
 
-        if buffer[..n].contains(&0) {
+        if let Some(pos) = buffer[..n].iter().position(|&b| b == 0) {
+            let unread = n - pos - 1;
+
+            if unread > 0 {
+                file.seek(SeekFrom::Current(-(unread as i64)))?;
+            }
+
             return Ok(());
         }
     }
 }
 
-
-fn compute_gzip_payload_hash(path: &str) -> io::Result<String> {
+/// Вычисляет XXH3 по gzip payload.
+///
+/// Исключает заголовок и последние 8 байт trailer.
+/// Предполагается один gzip-member на файл.
+fn compute_gzip_payload_hash(path: &str) -> io::Result<u64> {
     #[cfg(windows)]
     let mut file = {
         use std::os::windows::fs::OpenOptionsExt;
@@ -85,13 +105,6 @@ fn compute_gzip_payload_hash(path: &str) -> io::Result<String> {
     let mut file = File::open(path)?;
 
     let file_len = file.metadata()?.len();
-
-    if file_len < 18 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Gzip file is too small",
-        ));
-    }
 
     let mut header = [0u8; 10];
     file.read_exact(&mut header)?;
@@ -112,40 +125,50 @@ fn compute_gzip_payload_hash(path: &str) -> io::Result<String> {
         ));
     }
 
+    // FEXTRA
     if flags & 0x04 != 0 {
         let mut xlen = [0u8; 2];
         file.read_exact(&mut xlen)?;
 
-        let extra_len = u16::from_le_bytes(xlen) as u64;
-
-        file.seek(SeekFrom::Current(i64::try_from(extra_len).map_err(
-            |_| io::Error::new(io::ErrorKind::InvalidData, "Extra field too large"),
-        )?))?;
+        let extra_len = u16::from_le_bytes(xlen) as i64;
+        file.seek(SeekFrom::Current(extra_len))?;
     }
 
+    // FNAME
     if flags & 0x08 != 0 {
         skip_gzip_string(&mut file)?;
     }
 
+    // FCOMMENT
     if flags & 0x10 != 0 {
         skip_gzip_string(&mut file)?;
     }
 
+    // FHCRC
     if flags & 0x02 != 0 {
         file.seek(SeekFrom::Current(2))?;
     }
 
     let data_start = file.stream_position()?;
-    let data_end = file_len - 8;
+
+    let data_end = file_len.checked_sub(8).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Gzip file is too short for trailer: {}", path),
+        )
+    })?;
 
     if data_start > data_end {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "Invalid gzip structure",
+            format!(
+                "Invalid gzip structure: path={}, file_len={}, payload_start={}",
+                path, file_len, data_start
+            ),
         ));
     }
 
-    let mut hasher = Sha256::new();
+    let mut hasher = Xxh3::new();
     let mut buffer = [0u8; HASH_BUFFER_SIZE];
     let mut remaining = data_end - data_start;
 
@@ -158,8 +181,12 @@ fn compute_gzip_payload_hash(path: &str) -> io::Result<String> {
         remaining -= to_read as u64;
     }
 
-    Ok(hex::encode(hasher.finalize()))
+    Ok(hasher.digest())
 }
+
+// ------------------------------------------------------------
+// Result
+// ------------------------------------------------------------
 
 #[derive(Debug)]
 pub struct UpdateResult {
@@ -173,6 +200,10 @@ pub struct UpdateResult {
     pub total_lines: usize,
     pub no_new_files: bool,
 }
+
+// ------------------------------------------------------------
+// Update base
+// ------------------------------------------------------------
 
 pub fn update_base<P: ProgressReporter + ?Sized>(
     name: &str,
@@ -191,10 +222,12 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
     let mut all_new_gz_logs = Vec::<String>::new();
     let mut latest_checks = Vec::<(String, String, usize)>::new();
 
-    if !cfg.paths.is_empty() {
-        progress.set_message("Scanning");
-        progress.set_total(cfg.paths.len() as u64);
-    }
+    // --------------------------------------------------------
+    // STEP 1: Scan directories in parallel
+    // --------------------------------------------------------
+
+    progress.set_message("Scanning directories");
+    progress.set_total(cfg.paths.len() as u64);
 
     let discovered: Vec<(Vec<String>, Vec<String>)> = cfg
         .paths
@@ -204,11 +237,14 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
 
             let latest = get_logfiles::find_log_files(&entry.path, true, "latest.log", true);
 
-            progress.inc(1);
-
             (gz, latest)
         })
         .collect();
+
+    // Сканирование закончено; обновляем прогресс в основном потоке.
+    for _ in 0..cfg.paths.len() {
+        progress.inc(1);
+    }
 
     let mut candidates: Vec<(usize, String, String)> = Vec::new();
 
@@ -237,31 +273,66 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
         }
     }
 
-    if !cfg.paths.is_empty() {
-        progress.finish();
-    }
+    progress.finish();
 
+    // Стабильный порядок обработки и выбора оригинального файла.
     candidates.sort_by(|a, b| a.2.cmp(&b.2));
 
+    // --------------------------------------------------------
+    // STEP 2: Hash gzip files in parallel with live progress
+    // --------------------------------------------------------
+
+    let hash_total = candidates.len();
+
     progress.set_message("Hashing gzip files");
-    progress.set_total(candidates.len() as u64);
+    progress.set_total(hash_total as u64);
 
-    let hashed: Vec<(usize, String, String, io::Result<String>)> = candidates
-        .into_par_iter()
-        .map(|(index, relative_path, full_path)| {
-            let hash = compute_gzip_payload_hash(&full_path);
+    let (tx, rx) = mpsc::channel::<(usize, io::Result<u64>)>();
 
+    let mut hash_results: Vec<Option<io::Result<u64>>> =
+        std::iter::repeat_with(|| None).take(hash_total).collect();
+
+    std::thread::scope(|scope| {
+        let candidates_ref = &candidates;
+
+        scope.spawn(move || {
+            candidates_ref.par_iter().enumerate().for_each_with(
+                tx,
+                |sender, (index, candidate)| {
+                    let result = compute_gzip_payload_hash(&candidate.2);
+                    let _ = sender.send((index, result));
+                },
+            );
+        });
+
+        for (index, result) in rx {
+            hash_results[index] = Some(result);
             progress.inc(1);
-
-            (index, relative_path, full_path, hash)
-        })
-        .collect();
+        }
+    });
 
     progress.finish();
 
-    let mut seen_hashes = HashSet::<String>::new();
+    // --------------------------------------------------------
+    // STEP 3: Deduplicate gzip files
+    // --------------------------------------------------------
 
-    for (index, relative_path, full_path, result) in hashed {
+    let mut seen_hashes = HashSet::<u64>::new();
+
+    for (candidate, result) in candidates.into_iter().zip(hash_results) {
+        let (index, relative_path, full_path) = candidate;
+
+        let result = match result {
+            Some(result) => result,
+            None => {
+                eprintln!("Missing hash result for '{}'. Keeping file.", full_path);
+
+                all_new_gz_logs.push(full_path);
+                cfg.paths[index].files.push(relative_path);
+                continue;
+            }
+        };
+
         match result {
             Ok(hash) => {
                 if seen_hashes.insert(hash) {
@@ -271,7 +342,6 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
                     cfg.paths[index].ignored.push(relative_path);
                 }
             }
-
             Err(err) => {
                 eprintln!(
                     "Failed to hash gzip file '{}': {}. Keeping file.",
@@ -284,42 +354,62 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
         }
     }
 
-    if !latest_checks.is_empty() {
-        progress.set_message("Checking latest hashes");
-        progress.set_total(latest_checks.len() as u64);
-    }
+    // --------------------------------------------------------
+    // STEP 4: Check latest.log hashes in parallel
+    // --------------------------------------------------------
 
-    let latest_results: Vec<(String, usize)> = latest_checks
-        .par_iter()
-        .filter_map(|(path, stored_hash, last_line)| {
-            let result = match compute_file_hash(path) {
-                Ok(current_hash) if current_hash != *stored_hash => {
-                    Some((path.clone(), *last_line))
-                }
-                Ok(_) => None,
-                Err(err) => {
-                    eprintln!("Failed to hash '{}': {}", path, err);
-                    None
-                }
-            };
+    let latest_total = latest_checks.len();
 
+    progress.set_message("Checking latest hashes");
+    progress.set_total(latest_total as u64);
+
+    let (tx, rx) = mpsc::channel::<(usize, Option<(String, usize)>)>();
+
+    let mut latest_slots: Vec<Option<(String, usize)>> = vec![None; latest_total];
+
+    std::thread::scope(|scope| {
+        let checks_ref = &latest_checks;
+
+        scope.spawn(move || {
+            checks_ref.par_iter().enumerate().for_each_with(
+                tx,
+                |sender, (index, (path, stored_hash, last_line))| {
+                    let result = match compute_file_hash(path) {
+                        Ok(current_hash) if current_hash != *stored_hash => {
+                            Some((path.clone(), *last_line))
+                        }
+                        Ok(_) => None,
+                        Err(err) => {
+                            eprintln!("Failed to hash '{}': {}", path, err);
+                            None
+                        }
+                    };
+
+                    let _ = sender.send((index, result));
+                },
+            );
+        });
+
+        for (index, result) in rx {
+            latest_slots[index] = result;
             progress.inc(1);
-            result
-        })
-        .collect();
+        }
+    });
 
-    if !latest_checks.is_empty() {
-        progress.set_message("");
-        progress.finish();
-    }
+    progress.finish();
+
+    let latest_results: Vec<(String, usize)> = latest_slots.into_iter().flatten().collect();
+
+    // --------------------------------------------------------
+    // STEP 5: Return early if nothing changed
+    // --------------------------------------------------------
 
     let new_gz_count = all_new_gz_logs.len();
     let new_latest_count = latest_results.len();
+
     let total_new_files = new_gz_count + new_latest_count;
 
     if total_new_files == 0 {
-        progress.finish();
-
         return Ok(UpdateResult {
             new_gz_files: 0,
             new_latest_files: 0,
@@ -333,6 +423,11 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
         });
     }
 
+    // --------------------------------------------------------
+    // STEP 6: Parse new gzip files
+    // --------------------------------------------------------
+
+    progress.set_message("Parsing gzip logs");
     progress.set_total(new_gz_count as u64);
 
     let (new_logs, gz_errors) = match parse_logs(std::mem::take(&mut all_new_gz_logs), progress) {
@@ -345,6 +440,11 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
 
     progress.finish();
 
+    // --------------------------------------------------------
+    // STEP 7: Parse changed latest.log files
+    // --------------------------------------------------------
+
+    progress.set_message("Parsing latest logs");
     progress.set_total(new_latest_count as u64);
 
     let (logs_latest, latest_params, latest_errors) = match parse_latest(latest_results, progress) {
@@ -359,6 +459,10 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
 
     let parsed_gz_lines = new_logs.len();
     let parsed_latest_lines = logs_latest.len();
+
+    // --------------------------------------------------------
+    // STEP 8: Update latest metadata
+    // --------------------------------------------------------
 
     let latest_updates: HashMap<String, LatestInfo> = latest_params
         .into_iter()
@@ -379,9 +483,13 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
         }
     }
 
+    // --------------------------------------------------------
+    // STEP 9: Read existing logs
+    // --------------------------------------------------------
+
     let zst_path = get_zst_path(name)?;
 
-    progress.set_message("Reading existing");
+    progress.set_message("Reading existing logs");
     progress.set_total(cfg.lines);
 
     let existing_logs = read_existing_logs_with_progress(&zst_path, progress)?;
@@ -398,6 +506,10 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
 
     let total_lines = all_logs.len();
     let new_lines_count = total_lines.saturating_sub(existing_count);
+
+    // --------------------------------------------------------
+    // STEP 10: Update base metadata
+    // --------------------------------------------------------
 
     let now = system_time_secs().to_string();
 
@@ -426,8 +538,12 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
 
     save_log(name, &cfg)?;
 
-    progress.set_total(total_lines as u64);
+    // --------------------------------------------------------
+    // STEP 11: Write logs
+    // --------------------------------------------------------
+
     progress.set_message("Writing logs");
+    progress.set_total(total_lines as u64);
 
     write_logs_to_zstd_with_progress(&all_logs, &zst_path, progress)?;
 
@@ -446,6 +562,10 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
     })
 }
 
+// ------------------------------------------------------------
+// Other utilities
+// ------------------------------------------------------------
+
 fn system_time_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -457,7 +577,6 @@ fn read_existing_logs_with_progress<P: ProgressReporter + ?Sized>(
     zst_path: &str,
     progress: &P,
 ) -> io::Result<Vec<(i64, String)>> {
-    use std::io::{BufRead, BufReader};
     use zstd::stream::read::Decoder;
 
     let file = File::open(zst_path)?;
@@ -470,6 +589,7 @@ fn read_existing_logs_with_progress<P: ProgressReporter + ?Sized>(
         let line = line?;
 
         if line.len() < 13 {
+            progress.inc(1);
             continue;
         }
 
@@ -484,3 +604,4 @@ fn read_existing_logs_with_progress<P: ProgressReporter + ?Sized>(
 
     Ok(logs)
 }
+
