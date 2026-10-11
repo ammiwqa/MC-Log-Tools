@@ -7,6 +7,7 @@ pub trait ProgressReporter: Send + Sync {
     fn set_total(&self, n: u64);
     fn set_message(&self, _msg: &str) {}
     fn finish(&self) {}
+    fn stage_completed(&self, _stats: StageStats) {}
 }
 
 pub struct ProgressBarWrapper {
@@ -149,4 +150,21 @@ impl ProgressReporter for Arc<WriteProgress> {
     fn set_total(&self, n: u64) {
         self.as_ref().set_total(n);
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StageKind {
+    Dedup,
+    GzipParsing,
+    LatestParsing,
+}
+
+#[derive(Debug, Clone)]
+pub struct StageStats {
+    pub stage: StageKind,
+    pub files: usize,
+    pub lines: usize,
+    pub file_errors: usize,
+    pub parse_errors: usize,
+    pub duplicate_files: usize,
 }

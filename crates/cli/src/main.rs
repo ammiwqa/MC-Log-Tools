@@ -168,6 +168,7 @@ fn spawn_drawer(
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let bright_cyan_style = Style::new().cyan().bold();
+        let bright_green_style = Style::new().green().bold();
 
         while let Ok(ev) = rx.recv() {
             match ev {
@@ -175,15 +176,87 @@ fn spawn_drawer(
                     pb.set_length(total);
                     pb.set_position(pos);
                 }
-
                 CoreEvent::Message(msg) => {
                     pb.set_prefix(format!("{}", bright_cyan_style.apply_to(msg)));
+                }
+                CoreEvent::DedupCompleted { duplicate_files } => {
+                    if duplicate_files > 0 {
+                        pb.suspend(|| {
+                            println!(
+                                "   {} {} duplicate files skipped",
+                                bright_green_style.apply_to("Dedup"),
+                                duplicate_files
+                            );
+                        });
+                    }
+                }
+                CoreEvent::GzipParsingCompleted {
+                    files,
+                    lines,
+                    file_errors,
+                    parse_errors,
+                } => {
+                    if files > 0 {
+                        pb.suspend(|| {
+                            println!(
+                                "   {} {} files -> {} lines {}",
+                                bright_green_style.apply_to("Parsing"),
+                                files,
+                                lines,
+                                format_error_counts(file_errors, parse_errors)
+                            );
+                        });
+                    }
+                }
+                CoreEvent::LatestParsingCompleted {
+                    files,
+                    lines,
+                    file_errors,
+                    parse_errors,
+                } => {
+                    if files > 0 {
+                        pb.suspend(|| {
+                            println!(
+                                "   {} latest.log files -> {} lines {}",
+                                bright_green_style.apply_to("Parsing latest"),
+                                lines,
+                                format_error_counts(file_errors, parse_errors)
+                            );
+                        });
+                    }
+                }
+                CoreEvent::WritingCompleted { lines } => {
+                    pb.suspend(|| {
+                        println!(
+                            "   {} {} lines written",
+                            bright_green_style.apply_to("Writing"),
+                            lines
+                        );
+                    });
                 }
             }
         }
 
         pb.finish_and_clear();
     })
+}
+
+fn format_error_counts(file_errors: usize, parse_errors: usize) -> String {
+    let mut parts = Vec::new();
+
+    if file_errors > 0 {
+        parts.push(format!("{} file errors", file_errors));
+    }
+
+    if parse_errors > 0 {
+        parts.push(format!("{} parse errors", parse_errors));
+    }
+
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("({})", parts.join(", "))
+    }
 }
 
 fn main() {
@@ -228,38 +301,11 @@ fn main() {
             let (tx, rx) = operations::event_channel();
             let drawer = spawn_drawer(pb.clone(), rx);
 
+
             match operations::create_base(all_paths, name.clone(), tx.clone()) {
                 Ok(result) => {
                     drop(tx);
                     drawer.join().unwrap();
-
-                    if result.duplicate_files > 0 {
-                        println!(
-                            "   {} {} duplicate files skipped",
-                            bright_green_style.apply_to("Dedup"),
-                            result.duplicate_files
-                        );
-                    }
-
-                    if result.gz_files > 0 {
-                        println!(
-                            "   {} {} files -> {} lines {}",
-                            bright_green_style.apply_to("Parsing"),
-                            result.gz_files,
-                            result.parsed_gz_lines,
-                            format_error_stats(&result.gz_errors)
-                        );
-                    }
-
-                    if result.latest_files > 0 {
-                        println!(
-                            "   {} {} latest files -> {} lines {}",
-                            bright_green_style.apply_to("Parsing latest"),
-                            result.latest_files,
-                            result.parsed_latest_lines,
-                            format_error_stats(&result.latest_errors)
-                        );
-                    }
 
                     println!(
                         "   {} {} lines -> {}",

@@ -1,8 +1,7 @@
+use progress::{ProgressReporter, StageKind, StageStats};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-
-use progress::ProgressReporter;
 
 use crate::events::{CoreEvent, EventSender};
 
@@ -35,6 +34,10 @@ impl ChannelProgress {
 
     pub fn total(&self) -> u64 {
         self.total.load(Ordering::Relaxed)
+    }
+
+    pub fn send_event(&self, event: CoreEvent) {
+        let _ = self.tx.send(event);
     }
 
     fn try_emit_progress(&self, force: bool) {
@@ -73,6 +76,28 @@ pub fn null_progress() -> &'static ChannelProgress {
 }
 
 impl ProgressReporter for ChannelProgress {
+    fn stage_completed(&self, stats: StageStats) {
+        let event = match stats.stage {
+            StageKind::Dedup => CoreEvent::DedupCompleted {
+                duplicate_files: stats.duplicate_files,
+            },
+            StageKind::GzipParsing => CoreEvent::GzipParsingCompleted {
+                files: stats.files,
+                lines: stats.lines,
+                file_errors: stats.file_errors,
+                parse_errors: stats.parse_errors,
+            },
+            StageKind::LatestParsing => CoreEvent::LatestParsingCompleted {
+                files: stats.files,
+                lines: stats.lines,
+                file_errors: stats.file_errors,
+                parse_errors: stats.parse_errors,
+            },
+        };
+
+        let _ = self.tx.send(event);
+    }
+
     fn inc(&self, n: u64) {
         self.pos.fetch_add(n, Ordering::Relaxed);
         self.try_emit_progress(false);
@@ -95,18 +120,22 @@ impl ProgressReporter for ChannelProgress {
 
 impl ProgressReporter for &ChannelProgress {
     fn inc(&self, n: u64) {
-        (*self).inc(n);
+        (**self).inc(n);
+    }
+
+    fn stage_completed(&self, stats: StageStats) {
+        <ChannelProgress as ProgressReporter>::stage_completed(*self, stats);
     }
 
     fn set_total(&self, n: u64) {
-        (*self).set_total(n);
+        (**self).set_total(n);
     }
 
     fn set_message(&self, msg: &str) {
-        (*self).set_message(msg);
+        (**self).set_message(msg);
     }
 
     fn finish(&self) {
-        (*self).finish();
+        (**self).finish();
     }
 }

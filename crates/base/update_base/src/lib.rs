@@ -13,10 +13,6 @@ use zip_writer::write_logs_to_zstd_with_progress;
 
 const HASH_BUFFER_SIZE: usize = 1024 * 1024;
 
-// ------------------------------------------------------------
-// Utility functions
-// ------------------------------------------------------------
-
 fn get_dir(path: &str) -> String {
     PathBuf::from(path)
         .parent()
@@ -25,8 +21,6 @@ fn get_dir(path: &str) -> String {
         .into_owned()
 }
 
-/// SHA-256 оставлен для latest.log, поскольку сохранённые хеши
-/// в LatestInfo могут быть созданы именно этим алгоритмом.
 fn compute_file_hash(path: &str) -> io::Result<String> {
     #[cfg(windows)]
     let file = {
@@ -58,9 +52,6 @@ fn compute_file_hash(path: &str) -> io::Result<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
-/// Пропускает строку gzip-заголовка до нулевого терминатора.
-///
-/// Не допускает смещения позиции чтения за пределы строки.
 fn skip_gzip_string(file: &mut File) -> io::Result<()> {
     let mut buffer = [0u8; 256];
 
@@ -86,10 +77,6 @@ fn skip_gzip_string(file: &mut File) -> io::Result<()> {
     }
 }
 
-/// Вычисляет XXH3 по gzip payload.
-///
-/// Исключает заголовок и последние 8 байт trailer.
-/// Предполагается один gzip-member на файл.
 fn compute_gzip_payload_hash(path: &str) -> io::Result<u64> {
     #[cfg(windows)]
     let mut file = {
@@ -125,7 +112,6 @@ fn compute_gzip_payload_hash(path: &str) -> io::Result<u64> {
         ));
     }
 
-    // FEXTRA
     if flags & 0x04 != 0 {
         let mut xlen = [0u8; 2];
         file.read_exact(&mut xlen)?;
@@ -134,17 +120,14 @@ fn compute_gzip_payload_hash(path: &str) -> io::Result<u64> {
         file.seek(SeekFrom::Current(extra_len))?;
     }
 
-    // FNAME
     if flags & 0x08 != 0 {
         skip_gzip_string(&mut file)?;
     }
 
-    // FCOMMENT
     if flags & 0x10 != 0 {
         skip_gzip_string(&mut file)?;
     }
 
-    // FHCRC
     if flags & 0x02 != 0 {
         file.seek(SeekFrom::Current(2))?;
     }
@@ -184,10 +167,6 @@ fn compute_gzip_payload_hash(path: &str) -> io::Result<u64> {
     Ok(hasher.digest())
 }
 
-// ------------------------------------------------------------
-// Result
-// ------------------------------------------------------------
-
 #[derive(Debug)]
 pub struct UpdateResult {
     pub new_gz_files: usize,
@@ -200,10 +179,6 @@ pub struct UpdateResult {
     pub total_lines: usize,
     pub no_new_files: bool,
 }
-
-// ------------------------------------------------------------
-// Update base
-// ------------------------------------------------------------
 
 pub fn update_base<P: ProgressReporter + ?Sized>(
     name: &str,
@@ -222,10 +197,6 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
     let mut all_new_gz_logs = Vec::<String>::new();
     let mut latest_checks = Vec::<(String, String, usize)>::new();
 
-    // --------------------------------------------------------
-    // STEP 1: Scan directories in parallel
-    // --------------------------------------------------------
-
     progress.set_message("Scanning directories");
     progress.set_total(cfg.paths.len() as u64);
 
@@ -241,7 +212,6 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
         })
         .collect();
 
-    // Сканирование закончено; обновляем прогресс в основном потоке.
     for _ in 0..cfg.paths.len() {
         progress.inc(1);
     }
@@ -275,12 +245,7 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
 
     progress.finish();
 
-    // Стабильный порядок обработки и выбора оригинального файла.
     candidates.sort_by(|a, b| a.2.cmp(&b.2));
-
-    // --------------------------------------------------------
-    // STEP 2: Hash gzip files in parallel with live progress
-    // --------------------------------------------------------
 
     let hash_total = candidates.len();
 
@@ -312,10 +277,6 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
     });
 
     progress.finish();
-
-    // --------------------------------------------------------
-    // STEP 3: Deduplicate gzip files
-    // --------------------------------------------------------
 
     let mut seen_hashes = HashSet::<u64>::new();
 
@@ -353,10 +314,6 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
             }
         }
     }
-
-    // --------------------------------------------------------
-    // STEP 4: Check latest.log hashes in parallel
-    // --------------------------------------------------------
 
     let latest_total = latest_checks.len();
 
@@ -400,10 +357,6 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
 
     let latest_results: Vec<(String, usize)> = latest_slots.into_iter().flatten().collect();
 
-    // --------------------------------------------------------
-    // STEP 5: Return early if nothing changed
-    // --------------------------------------------------------
-
     let new_gz_count = all_new_gz_logs.len();
     let new_latest_count = latest_results.len();
 
@@ -423,10 +376,6 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
         });
     }
 
-    // --------------------------------------------------------
-    // STEP 6: Parse new gzip files
-    // --------------------------------------------------------
-
     progress.set_message("Parsing gzip logs");
     progress.set_total(new_gz_count as u64);
 
@@ -439,10 +388,6 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
     };
 
     progress.finish();
-
-    // --------------------------------------------------------
-    // STEP 7: Parse changed latest.log files
-    // --------------------------------------------------------
 
     progress.set_message("Parsing latest logs");
     progress.set_total(new_latest_count as u64);
@@ -459,10 +404,6 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
 
     let parsed_gz_lines = new_logs.len();
     let parsed_latest_lines = logs_latest.len();
-
-    // --------------------------------------------------------
-    // STEP 8: Update latest metadata
-    // --------------------------------------------------------
 
     let latest_updates: HashMap<String, LatestInfo> = latest_params
         .into_iter()
@@ -483,10 +424,6 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
         }
     }
 
-    // --------------------------------------------------------
-    // STEP 9: Read existing logs
-    // --------------------------------------------------------
-
     let zst_path = get_zst_path(name)?;
 
     progress.set_message("Reading existing logs");
@@ -506,10 +443,6 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
 
     let total_lines = all_logs.len();
     let new_lines_count = total_lines.saturating_sub(existing_count);
-
-    // --------------------------------------------------------
-    // STEP 10: Update base metadata
-    // --------------------------------------------------------
 
     let now = system_time_secs().to_string();
 
@@ -538,10 +471,6 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
 
     save_log(name, &cfg)?;
 
-    // --------------------------------------------------------
-    // STEP 11: Write logs
-    // --------------------------------------------------------
-
     progress.set_message("Writing logs");
     progress.set_total(total_lines as u64);
 
@@ -561,10 +490,6 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
         no_new_files: false,
     })
 }
-
-// ------------------------------------------------------------
-// Other utilities
-// ------------------------------------------------------------
 
 fn system_time_secs() -> u64 {
     std::time::SystemTime::now()
@@ -604,4 +529,3 @@ fn read_existing_logs_with_progress<P: ProgressReporter + ?Sized>(
 
     Ok(logs)
 }
-
