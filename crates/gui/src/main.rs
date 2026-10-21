@@ -1160,13 +1160,13 @@ impl eframe::App for LogtoolsApp {
                     ui.painter().rect_filled(rect, 3.0, theme::GREEN);
 
                     ui.label(
-                        egui::RichText::new("logtools")
+                        egui::RichText::new("LogTools")
                             .monospace()
                             .strong()
                             .size(18.0),
                     );
                 });
-                ui.label(faint("log search toolkit").small());
+                ui.label(faint("MC log search toolkit").small());
                 ui.add_space(20.0);
 
                 for screen in Screen::ALL {
@@ -1294,12 +1294,12 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1000.0, 680.0])
             .with_min_inner_size([840.0, 560.0])
-            .with_title("logtools"),
+            .with_title("LogTools"),
         ..Default::default()
     };
 
     eframe::run_native(
-        "logtools",
+        "LogTools",
         options,
         Box::new(move |cc| {
             install_fonts(&cc.egui_ctx);
