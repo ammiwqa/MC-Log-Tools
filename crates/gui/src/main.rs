@@ -8,11 +8,232 @@ use eframe::egui;
 use logtools_app::{CommandResult, Presenter};
 
 // =========================
+// THEME
+// =========================
+
+mod theme {
+    use crate::egui::Color32;
+
+    pub const BG: Color32 = Color32::from_rgb(0x09, 0x09, 0x0A); // поля ввода, лог
+    pub const PANEL: Color32 = Color32::from_rgb(0x0E, 0x0E, 0x10); // панели, окно
+    pub const SURFACE: Color32 = Color32::from_rgb(0x16, 0x16, 0x19); // кнопки, полосы таблиц
+    pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x1E, 0x1E, 0x22);
+    pub const SURFACE_ACTIVE: Color32 = Color32::from_rgb(0x27, 0x27, 0x2C);
+
+    // Границы
+    pub const BORDER: Color32 = Color32::from_rgb(0x26, 0x26, 0x2B);
+    pub const BORDER_HOVER: Color32 = Color32::from_rgb(0x3B, 0x3B, 0x42);
+
+    // Текст
+    pub const TEXT: Color32 = Color32::from_rgb(0xEB, 0xEB, 0xE7);
+    pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x8B, 0x8B, 0x86);
+    pub const TEXT_FAINT: Color32 = Color32::from_rgb(0x5E, 0x5E, 0x5A);
+
+    // Акцент
+    pub const GREEN: Color32 = Color32::from_rgb(0x0F, 0xDB, 0x92);
+    pub const GREEN_DIM: Color32 = Color32::from_rgb(0x0B, 0x93, 0x66);
+    pub const ON_GREEN: Color32 = Color32::from_rgb(0x05, 0x0D, 0x0A);
+
+    // Статусы
+    pub const RED: Color32 = Color32::from_rgb(0xEC, 0x6A, 0x88);
+    pub const AMBER: Color32 = Color32::from_rgb(0xE0, 0xAF, 0x5F);
+}
+
+fn stroke_1(color: egui::Color32) -> egui::Stroke {
+    egui::Stroke::new(1.0_f32, color)
+}
+
+fn muted(text: &str) -> egui::RichText {
+    egui::RichText::new(text).color(theme::TEXT_MUTED)
+}
+
+fn faint(text: &str) -> egui::RichText {
+    egui::RichText::new(text).color(theme::TEXT_FAINT)
+}
+
+fn primary_button(text: &str) -> egui::Button {
+    egui::Button::new(egui::RichText::new(text).color(theme::ON_GREEN).strong())
+        .fill(theme::GREEN)
+        .min_size(egui::vec2(0.0, 30.0))
+}
+
+fn ghost_button(text: &str) -> egui::Button {
+    egui::Button::new(egui::RichText::new(text))
+        .fill(theme::SURFACE)
+        .stroke(stroke_1(theme::BORDER))
+        .min_size(egui::vec2(0.0, 30.0))
+}
+
+fn danger_button(text: &str) -> egui::Button {
+    egui::Button::new(egui::RichText::new(text).color(theme::RED))
+        .fill(egui::Color32::TRANSPARENT)
+        .stroke(stroke_1(theme::BORDER))
+        .min_size(egui::vec2(0.0, 24.0))
+}
+
+fn small_button(text: &str) -> egui::Button {
+    egui::Button::new(egui::RichText::new(text).size(12.0))
+        .fill(theme::SURFACE)
+        .stroke(stroke_1(theme::BORDER))
+        .min_size(egui::vec2(0.0, 24.0))
+}
+
+fn screen_title(ui: &mut egui::Ui, title: &str, subtitle: &str) {
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("//")
+                .color(theme::GREEN)
+                .heading()
+                .strong(),
+        );
+        ui.heading(egui::RichText::new(title));
+    });
+    ui.label(muted(subtitle).small());
+    ui.add_space(8.0);
+}
+
+fn section_label(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .monospace()
+            .small()
+            .color(theme::TEXT_FAINT),
+    );
+}
+
+fn status_dot(ui: &mut egui::Ui, color: egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 3.5, color);
+}
+
+fn zed_progress_bar(ui: &mut egui::Ui, fraction: f32) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 6.0), egui::Sense::hover());
+
+    ui.painter().rect_filled(rect, 3.0, theme::SURFACE_ACTIVE);
+
+    let width = (rect.width() * fraction).min(rect.width());
+
+    if width > 1.0 {
+        let bar = egui::Rect::from_min_size(rect.left_top(), egui::vec2(width, rect.height()));
+        let radius = 3.0_f32.min(width * 0.5);
+        ui.painter().rect_filled(bar, radius, theme::GREEN);
+    }
+}
+
+fn log_line_color(line: &str) -> egui::Color32 {
+    let lower = line.to_lowercase();
+
+    if lower.contains("error") || lower.contains("failed") {
+        theme::RED
+    } else if lower.contains("warn") {
+        theme::AMBER
+    } else {
+        theme::TEXT_MUTED
+    }
+}
+
+fn install_fonts(ctx: &egui::Context) {
+    let candidates: &[&str] = &[
+        // Windows
+        r"C:\Windows\Fonts\CascadiaMono.ttf",
+        r"C:\Windows\Fonts\cascadiamono.ttf",
+        r"C:\Windows\Fonts\consola.ttf",
+        // macOS
+        "/System/Library/Fonts/Menlo.ttc",
+        "/System/Library/Fonts/SFMono-Regular.otf",
+        "/Library/Fonts/JetBrainsMono-Regular.ttf",
+        // Linux
+        "/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf",
+        "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf",
+        "/usr/share/fonts/truetype/cascadia/CascadiaCode-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    ];
+
+    let mut fonts = egui::FontDefinitions::default();
+
+    for path in candidates {
+        if let Ok(data) = std::fs::read(path) {
+            fonts.font_data.insert(
+                "zed_mono".to_owned(),
+                std::sync::Arc::new(egui::FontData::from_owned(data)),
+            );
+
+            if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                family.insert(0, "zed_mono".to_owned());
+            }
+
+            break;
+        }
+    }
+
+    ctx.set_fonts(fonts);
+}
+
+fn configure_style(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::dark();
+
+    visuals.panel_fill = theme::PANEL;
+    visuals.window_fill = theme::PANEL;
+    visuals.extreme_bg_color = theme::BG;
+    visuals.text_edit_bg_color = Some(theme::BG);
+    visuals.faint_bg_color = theme::SURFACE;
+    visuals.window_stroke = stroke_1(theme::BORDER);
+    visuals.hyperlink_color = theme::GREEN;
+    visuals.weak_text_color = Some(theme::TEXT_MUTED);
+    visuals.warn_fg_color = theme::AMBER;
+    visuals.error_fg_color = theme::RED;
+
+    visuals.selection.bg_fill = theme::GREEN_DIM;
+    visuals.selection.stroke = stroke_1(theme::GREEN);
+
+    let w = &mut visuals.widgets;
+
+    w.noninteractive.bg_fill = theme::PANEL;
+    w.noninteractive.bg_stroke = stroke_1(theme::BORDER);
+    w.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, theme::TEXT);
+
+    w.inactive.bg_fill = theme::SURFACE;
+    w.inactive.bg_stroke = stroke_1(theme::BORDER);
+    w.inactive.fg_stroke = egui::Stroke::new(1.0_f32, theme::TEXT);
+
+    w.hovered.bg_fill = theme::SURFACE_HOVER;
+    w.hovered.bg_stroke = stroke_1(theme::BORDER_HOVER);
+    w.hovered.fg_stroke = egui::Stroke::new(1.0_f32, theme::TEXT);
+
+    w.active.bg_fill = theme::SURFACE_ACTIVE;
+    w.active.bg_stroke = stroke_1(theme::GREEN_DIM);
+    w.active.fg_stroke = egui::Stroke::new(1.0_f32, theme::TEXT);
+
+    w.open.bg_fill = theme::SURFACE;
+    w.open.bg_stroke = stroke_1(theme::BORDER);
+    w.open.fg_stroke = egui::Stroke::new(1.0_f32, theme::TEXT);
+
+    let mut style = egui::Style::default();
+    style.visuals = visuals;
+    style.text_styles = [
+        (egui::TextStyle::Heading, egui::FontId::monospace(20.0)),
+        (egui::TextStyle::Body, egui::FontId::proportional(13.5)),
+        (egui::TextStyle::Button, egui::FontId::monospace(13.0)),
+        (egui::TextStyle::Small, egui::FontId::proportional(10.5)),
+        (egui::TextStyle::Monospace, egui::FontId::monospace(12.5)),
+    ]
+    .into();
+    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+    style.spacing.button_padding = egui::vec2(14.0, 6.0);
+
+    ctx.set_style(style);
+}
+
+// =========================
 // PRESENTER
 // =========================
 
 enum PresenterEvent {
-    Progress { pos: u64, total: u64 },
+    Progress {
+        pos: u64,
+        total: u64,
+    },
     Message(String),
     Log(String),
     Error(String),
@@ -113,7 +334,6 @@ enum GuiCommand {
     },
 }
 
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CmdKind {
     CreateBase,
@@ -124,11 +344,9 @@ enum CmdKind {
     ConfigParams,
 }
 
-
 struct Done {
     result: CommandResult,
 }
-
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -148,6 +366,15 @@ impl Screen {
         }
     }
 
+    fn subtitle(self) -> &'static str {
+        match self {
+            Screen::Bases => "Manage indexed log bases",
+            Screen::Search => "Search across indexed log bases",
+            Screen::Discover => "Find log directories on disk",
+            Screen::Config => "Global tool settings",
+        }
+    }
+
     const ALL: [Screen; 4] = [
         Screen::Bases,
         Screen::Search,
@@ -155,7 +382,6 @@ impl Screen {
         Screen::Config,
     ];
 }
-
 
 struct LogtoolsApp {
     screen: Screen,
@@ -339,50 +565,80 @@ impl LogtoolsApp {
     }
 
     fn ui_operation_status(&self, ui: &mut egui::Ui) {
-        if let Some((pos, total)) = self.progress {
-            ui.add(
-                egui::ProgressBar::new(if total > 0 {
-                    pos as f32 / total as f32
-                } else {
-                    0.0
-                })
-                .text(format!("{}/{}", pos, total))
-                .desired_width(400.0),
-            );
+        if self.progress.is_none() && self.message.is_none() && self.log_lines.is_empty() {
+            return;
         }
 
-        if let Some(msg) = &self.message {
-            ui.label(egui::RichText::new(msg).strong());
+        ui.add_space(2.0);
+
+        if self.message.is_some() || self.progress.is_some() {
+            ui.horizontal(|ui| {
+                if self.busy {
+                    ui.add(egui::Spinner::new().size(14.0));
+                    ui.add_space(2.0);
+                }
+
+                if let Some(msg) = &self.message {
+                    ui.label(egui::RichText::new(msg).strong());
+                }
+
+                if let Some((pos, total)) = self.progress {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(format!("{} / {}", pos, total))
+                                .monospace()
+                                .color(theme::TEXT_MUTED),
+                        );
+                    });
+                }
+            });
+
+            ui.add_space(4.0);
+        }
+
+        if let Some((pos, total)) = self.progress {
+            let fraction = if total > 0 {
+                (pos as f32 / total as f32).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+
+            zed_progress_bar(ui, fraction);
         }
 
         if !self.log_lines.is_empty() {
             let lines = &self.log_lines;
 
-            egui::ScrollArea::vertical()
-                .id_salt("status_log")
-                .max_height(150.0)
-                .auto_shrink(false)
-                .show(ui, |ui| {
-                    let start = lines.len().saturating_sub(200);
+            ui.add_space(4.0);
 
-                    for line in &lines[start..] {
-                        ui.monospace(line);
-                    }
-                });
+            ui.group(|ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("status_log")
+                    .max_height(150.0)
+                    .auto_shrink(false)
+                    .show(ui, |ui| {
+                        let start = lines.len().saturating_sub(200);
+
+                        for line in &lines[start..] {
+                            ui.monospace(
+                                egui::RichText::new(line.as_str()).color(log_line_color(line)),
+                            );
+                        }
+                    });
+            });
         }
     }
 
     fn ui_bases(&mut self, ui: &mut egui::Ui) {
+        screen_title(ui, "Bases", Screen::Bases.subtitle());
+
         ui.add_enabled_ui(!self.busy, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("Bases");
-                ui.add_space(16.0);
-
-                if ui.button("Refresh").clicked() {
+                if ui.add(ghost_button("Refresh")).clicked() {
                     self.reload_bases();
                 }
 
-                if ui.button("Create new base").clicked() {
+                if ui.add(primary_button("Create new base")).clicked() {
                     self.create_modal_open = true;
                 }
             });
@@ -394,7 +650,13 @@ impl LogtoolsApp {
         ui.separator();
 
         if self.bases.is_empty() {
-            ui.label("No bases found.");
+            ui.group(|ui| {
+                ui.set_min_size(egui::vec2(ui.available_width(), 90.0));
+
+                ui.centered_and_justified(|ui| {
+                    ui.label(muted("No bases found. Create one to start searching."));
+                });
+            });
         } else {
             let bases = self.bases.clone();
 
@@ -403,43 +665,38 @@ impl LogtoolsApp {
                 .auto_shrink(false)
                 .show(ui, |ui| {
                     egui::Grid::new("bases_grid").striped(true).show(ui, |ui| {
-                        ui.strong("Name");
-                        ui.strong("Lines");
-                        ui.strong("Actions");
+                        section_label(ui, "NAME");
+                        section_label(ui, "LINES");
+                        section_label(ui, "ACTIONS");
                         ui.end_row();
 
                         for base in &bases {
-                            ui.label(base.name.clone());
-                            ui.label(base.lines.to_string());
+                            ui.label(egui::RichText::new(base.name.clone()).monospace());
+                            ui.label(muted(&base.lines.to_string()).monospace());
 
-                            ui.horizontal(|ui| {
-                                let name = base.name.clone();
+                            let name = base.name.clone();
 
-                                if ui
-                                    .add_enabled(!self.busy, egui::Button::new("Update"))
-                                    .clicked()
-                                {
-                                    self.spawn_command(
-                                        CmdKind::UpdateBase,
-                                        GuiCommand::UpdateBase { name },
-                                    );
-                                }
+                            if ui.add_enabled(!self.busy, small_button("Update")).clicked() {
+                                self.spawn_command(
+                                    CmdKind::UpdateBase,
+                                    GuiCommand::UpdateBase { name },
+                                );
+                            }
 
-                                let name = base.name.clone();
+                            let name = base.name.clone();
 
-                                if ui
-                                    .add_enabled(!self.busy, egui::Button::new("Delete"))
-                                    .clicked()
-                                {
-                                    self.spawn_command(
-                                        CmdKind::Delete,
-                                        GuiCommand::Delete {
-                                            name,
-                                            force_yes: false,
-                                        },
-                                    );
-                                }
-                            });
+                            if ui
+                                .add_enabled(!self.busy, danger_button("Delete"))
+                                .clicked()
+                            {
+                                self.spawn_command(
+                                    CmdKind::Delete,
+                                    GuiCommand::Delete {
+                                        name,
+                                        force_yes: false,
+                                    },
+                                );
+                            }
 
                             ui.end_row();
                         }
@@ -449,19 +706,23 @@ impl LogtoolsApp {
 
         if let Some(path) = &self.results_path {
             ui.add_space(8.0);
-            ui.label(format!("Results: {}", path));
+            ui.separator();
 
-            if ui.button("Open results file").clicked() {
-                self.open_results_file();
-            }
+            ui.horizontal(|ui| {
+                ui.label(muted("Results file:").monospace());
+                ui.label(egui::RichText::new(path.as_str()).monospace());
+
+                if ui.add(ghost_button("Open results file")).clicked() {
+                    self.open_results_file();
+                }
+            });
         }
     }
 
     fn ui_search(&mut self, ui: &mut egui::Ui) {
-        ui.add_enabled_ui(!self.busy, |ui| {
-            ui.heading("Search");
-            ui.add_space(8.0);
+        screen_title(ui, "Search", Screen::Search.subtitle());
 
+        ui.add_enabled_ui(!self.busy, |ui| {
             let names: Vec<String> = self.bases.iter().map(|b| b.name.clone()).collect();
 
             if self.search_base.is_empty() {
@@ -470,27 +731,33 @@ impl LogtoolsApp {
                 }
             }
 
-            egui::ComboBox::from_label("Base")
-                .selected_text(self.search_base.clone())
-                .show_ui(ui, |ui| {
-                    for name in &names {
-                        ui.selectable_value(&mut self.search_base, name.clone(), name.clone());
-                    }
-                });
-
             ui.horizontal(|ui| {
-                ui.label("Text:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.search_text)
-                        .desired_width(400.0)
-                        .hint_text("supports & | - ! parens and <globs>"),
-                );
+                ui.label(muted("Base:"));
+
+                egui::ComboBox::from_id_salt("search_base_combo")
+                    .width(320.0)
+                    .selected_text(egui::RichText::new(self.search_base.as_str()).monospace())
+                    .show_ui(ui, |ui| {
+                        for name in &names {
+                            ui.selectable_value(&mut self.search_base, name.clone(), name.clone());
+                        }
+                    });
             });
+
+            ui.add_space(6.0);
+
+            ui.add(
+                egui::TextEdit::singleline(&mut self.search_text)
+                    .desired_width(ui.available_width())
+                    .hint_text("supports & | - ! parens and <globs>"),
+            );
+
+            ui.add_space(6.0);
 
             let can_search = !self.search_base.is_empty() && !self.search_text.is_empty();
 
             if ui
-                .add_enabled(can_search, egui::Button::new("Search"))
+                .add_enabled(can_search, primary_button("Search"))
                 .clicked()
             {
                 self.spawn_command(
@@ -513,11 +780,21 @@ impl LogtoolsApp {
             ui.separator();
 
             ui.horizontal(|ui| {
-                ui.heading("Results (first 100 lines)");
+                ui.label(
+                    egui::RichText::new("//")
+                        .color(theme::GREEN)
+                        .heading()
+                        .strong(),
+                );
+                ui.heading("Results");
 
-                if ui.button("Open results file").clicked() {
-                    self.open_results_file();
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(muted("first 100 lines").small());
+
+                    if ui.add(ghost_button("Open results file")).clicked() {
+                        self.open_results_file();
+                    }
+                });
             });
 
             egui::ScrollArea::vertical()
@@ -525,26 +802,28 @@ impl LogtoolsApp {
                 .auto_shrink(false)
                 .show(ui, |ui| {
                     for line in preview {
-                        ui.monospace(line);
+                        ui.monospace(
+                            egui::RichText::new(line.as_str()).color(log_line_color(&line)),
+                        );
                     }
                 });
         }
     }
 
     fn ui_discover(&mut self, ui: &mut egui::Ui) {
-        ui.add_enabled_ui(!self.busy, |ui| {
-            ui.heading("Discover");
-            ui.add_space(8.0);
+        screen_title(ui, "Discover", Screen::Discover.subtitle());
 
-            ui.label("Root directory:");
+        ui.add_enabled_ui(!self.busy, |ui| {
+            ui.label(muted("Root directory:"));
+
             ui.horizontal(|ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.disc_root)
-                        .desired_width(400.0)
+                        .desired_width(420.0)
                         .hint_text("Empty = user home"),
                 );
 
-                if ui.button("Browse").clicked() {
+                if ui.add(ghost_button("Browse")).clicked() {
                     if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                         self.disc_root = dir.to_string_lossy().to_string();
                     }
@@ -556,12 +835,12 @@ impl LogtoolsApp {
                 ui.checkbox(&mut self.disc_skip_everything, "Skip Everything");
             });
 
-            ui.label("Path to Everything64.dll / es.exe:");
-            ui.text_edit_singleline(&mut self.disc_es);
+            ui.label(muted("Path to Everything64.dll / es.exe:"));
+            ui.add(egui::TextEdit::singleline(&mut self.disc_es).desired_width(420.0));
 
             ui.add_space(8.0);
 
-            if ui.button("Discover").clicked() {
+            if ui.add(primary_button("Discover")).clicked() {
                 let no_everything = self.disc_skip_everything || !self.disc_use_everything;
 
                 let root = if self.disc_root.trim().is_empty() {
@@ -598,11 +877,19 @@ impl LogtoolsApp {
             ui.separator();
 
             ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("//")
+                        .color(theme::GREEN)
+                        .heading()
+                        .strong(),
+                );
                 ui.heading("Found log directories");
 
-                if ui.button("Open results file").clicked() {
-                    self.open_results_file();
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(ghost_button("Open results file")).clicked() {
+                        self.open_results_file();
+                    }
+                });
             });
 
             egui::ScrollArea::vertical()
@@ -610,34 +897,37 @@ impl LogtoolsApp {
                 .auto_shrink(false)
                 .show(ui, |ui| {
                     for line in preview {
-                        ui.monospace(line);
+                        ui.monospace(
+                            egui::RichText::new(line.as_str()).color(log_line_color(&line)),
+                        );
                     }
                 });
         }
     }
 
     fn ui_config(&mut self, ui: &mut egui::Ui) {
+        screen_title(ui, "Config", Screen::Config.subtitle());
+
         ui.add_enabled_ui(!self.busy, |ui| {
-            ui.heading("Config");
-            ui.add_space(8.0);
+            section_label(ui, "everything_dll");
 
-            egui::Grid::new("config_grid").striped(true).show(ui, |ui| {
-                ui.strong("everything_dll");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.cfg_everything_dll).desired_width(360.0),
-                );
-                ui.end_row();
-
-                ui.strong("confirm_delete");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.cfg_confirm_delete).desired_width(360.0),
-                );
-                ui.end_row();
-            });
+            ui.add(
+                egui::TextEdit::singleline(&mut self.cfg_everything_dll)
+                    .desired_width(ui.available_width()),
+            );
 
             ui.add_space(8.0);
 
-            if ui.button("Save").clicked() {
+            section_label(ui, "confirm_delete");
+
+            ui.add(
+                egui::TextEdit::singleline(&mut self.cfg_confirm_delete)
+                    .desired_width(ui.available_width()),
+            );
+
+            ui.add_space(8.0);
+
+            if ui.add(primary_button("Save")).clicked() {
                 let params = vec![
                     (
                         "everything_dll".to_string(),
@@ -654,22 +944,35 @@ impl LogtoolsApp {
         });
 
         ui.add_space(8.0);
+        ui.separator();
 
         let map = tools::config::load_config();
 
         if map.is_empty() {
-            ui.label("No config parameters set.");
+            ui.label(muted("No config parameters set."));
         } else {
+            section_label(ui, "CURRENT VALUES");
+
             for (k, v) in &map {
-                ui.label(format!(
-                    "{:<20} {}",
-                    k,
-                    v.as_str().unwrap_or(&v.to_string())
-                ));
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{:<20}", k))
+                            .monospace()
+                            .color(theme::GREEN),
+                    );
+                    ui.label(
+                        egui::RichText::new(v.as_str().unwrap_or(&v.to_string()).to_string())
+                            .monospace(),
+                    );
+                });
             }
         }
     }
 }
+
+// =========================
+// APP / LAYOUT
+// =========================
 
 impl eframe::App for LogtoolsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -682,10 +985,20 @@ impl eframe::App for LogtoolsApp {
 
         if let Some(err) = self.last_error.clone() {
             egui::Modal::new(egui::Id::new("error_modal")).show(ctx, |ui| {
-                ui.heading("Error");
-                ui.colored_label(egui::Color32::RED, err);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("//")
+                            .color(theme::RED)
+                            .heading()
+                            .strong(),
+                    );
+                    ui.heading("Error");
+                });
+                ui.add_space(4.0);
+                ui.colored_label(theme::RED, err);
+                ui.add_space(8.0);
 
-                if ui.button("OK").clicked() {
+                if ui.add(ghost_button("OK")).clicked() {
                     self.last_error = None;
                 }
             });
@@ -693,17 +1006,27 @@ impl eframe::App for LogtoolsApp {
 
         if let Some((prompt, reply_tx)) = self.confirm.clone() {
             egui::Modal::new(egui::Id::new("confirm_modal")).show(ctx, |ui| {
-                ui.heading("Confirm");
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("//")
+                            .color(theme::AMBER)
+                            .heading()
+                            .strong(),
+                    );
+                    ui.heading("Confirm");
+                });
+                ui.add_space(4.0);
                 ui.label(prompt);
                 ui.separator();
+                ui.add_space(4.0);
 
                 ui.horizontal(|ui| {
-                    if ui.button("Yes").clicked() {
+                    if ui.add(primary_button("Yes")).clicked() {
                         let _ = reply_tx.send(true);
                         self.confirm = None;
                     }
 
-                    if ui.button("No").clicked() {
+                    if ui.add(ghost_button("No")).clicked() {
                         let _ = reply_tx.send(false);
                         self.confirm = None;
                     }
@@ -713,22 +1036,33 @@ impl eframe::App for LogtoolsApp {
 
         if self.create_modal_open {
             egui::Modal::new(egui::Id::new("create_modal")).show(ctx, |ui| {
-                ui.heading("Create new base");
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("//")
+                            .color(theme::GREEN)
+                            .heading()
+                            .strong(),
+                    );
+                    ui.heading("Create new base");
+                });
+                ui.add_space(4.0);
                 ui.separator();
 
                 ui.horizontal(|ui| {
                     ui.label("Name:");
-                    ui.text_edit_singleline(&mut self.create_name);
+                    ui.add(egui::TextEdit::singleline(&mut self.create_name).desired_width(340.0));
                 });
 
-                ui.label("Paths (one per line):");
+                ui.label(muted("Paths (one per line):"));
 
                 egui::ScrollArea::vertical()
                     .id_salt("create_paths_scroll")
                     .max_height(120.0)
                     .show(ui, |ui| {
                         ui.add(
-                            egui::TextEdit::multiline(&mut self.create_paths).desired_width(420.0),
+                            egui::TextEdit::multiline(&mut self.create_paths)
+                                .desired_width(440.0)
+                                .hint_text("one path per line; leave empty when using a file"),
                         );
                     });
 
@@ -744,13 +1078,16 @@ impl eframe::App for LogtoolsApp {
                 });
 
                 ui.separator();
+                ui.add_space(4.0);
 
                 ui.horizontal(|ui| {
-                    let can_create =
-                        !self.create_name.is_empty() && !self.create_paths.trim().is_empty();
+                    let can_create = !self.create_name.is_empty()
+                        && (!self.create_paths.trim().is_empty()
+                            || (self.create_from_file
+                                && !self.create_from_file_path.trim().is_empty()));
 
                     if ui
-                        .add_enabled(can_create, egui::Button::new("Create"))
+                        .add_enabled(can_create, primary_button("Create"))
                         .clicked()
                     {
                         let paths: Vec<String> = self
@@ -782,7 +1119,7 @@ impl eframe::App for LogtoolsApp {
                         self.create_from_file_path.clear();
                     }
 
-                    if ui.button("Cancel").clicked() {
+                    if ui.add(ghost_button("Cancel")).clicked() {
                         self.create_modal_open = false;
                     }
                 });
@@ -790,29 +1127,89 @@ impl eframe::App for LogtoolsApp {
         }
 
         egui::SidePanel::left("nav_panel")
-            .exact_width(140.0)
+            .exact_width(190.0)
             .show(ctx, |ui| {
-                ui.add_space(16.0);
-                ui.heading("logtools");
-                ui.add_space(16.0);
+                ui.add_space(18.0);
+
+                ui.horizontal(|ui| {
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 3.0, theme::GREEN);
+
+                    ui.label(
+                        egui::RichText::new("logtools")
+                            .monospace()
+                            .strong()
+                            .size(18.0),
+                    );
+                });
+                ui.label(faint("log search toolkit").small());
+                ui.add_space(20.0);
 
                 for screen in Screen::ALL {
                     let selected = self.screen == screen;
 
-                    let response = ui.add_enabled(
-                        !self.busy,
-                        egui::Button::selectable(
-                            selected,
-                            egui::RichText::new(screen.label()).heading(),
-                        ),
-                    );
+                    let text = egui::RichText::new(screen.label())
+                        .monospace()
+                        .size(15.0)
+                        .color(if selected {
+                            theme::TEXT
+                        } else {
+                            theme::TEXT_MUTED
+                        });
+
+                    let button = egui::Button::selectable(selected, text)
+                        .fill(if selected {
+                            theme::SURFACE
+                        } else {
+                            egui::Color32::TRANSPARENT
+                        })
+                        .stroke(if selected {
+                            stroke_1(theme::BORDER)
+                        } else {
+                            egui::Stroke::NONE
+                        })
+                        .min_size(egui::vec2(ui.available_width(), 34.0));
+
+                    let response = ui.add_enabled(!self.busy, button);
+
+                    if selected {
+                        let rect = response.rect;
+                        let bar = egui::Rect::from_min_max(
+                            egui::pos2(rect.left(), rect.top() + 8.0),
+                            egui::pos2(rect.left() + 2.0, rect.bottom() - 8.0),
+                        );
+                        ui.painter().rect_filled(bar, 1.0, theme::GREEN);
+                    }
 
                     if response.clicked() {
                         self.screen = screen;
                     }
 
-                    ui.add_space(8.0);
+                    ui.add_space(4.0);
                 }
+
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                    ui.horizontal(|ui| {
+                        status_dot(
+                            ui,
+                            if self.busy {
+                                theme::AMBER
+                            } else {
+                                theme::GREEN
+                            },
+                        );
+
+                        ui.label(
+                            egui::RichText::new(if self.busy { "working..." } else { "ready" })
+                                .monospace()
+                                .small()
+                                .color(theme::TEXT_FAINT),
+                        );
+                    });
+
+                    ui.add_space(6.0);
+                });
             });
 
         egui::CentralPanel::default().show(ctx, |ui| match self.screen {
@@ -870,7 +1267,8 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([800.0, 600.0])
+            .with_inner_size([1000.0, 680.0])
+            .with_min_inner_size([840.0, 560.0])
             .with_title("logtools"),
         ..Default::default()
     };
@@ -879,7 +1277,8 @@ fn main() -> eframe::Result<()> {
         "logtools",
         options,
         Box::new(move |cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            install_fonts(&cc.egui_ctx);
+            configure_style(&cc.egui_ctx);
             Ok(Box::new(app))
         }),
     )
