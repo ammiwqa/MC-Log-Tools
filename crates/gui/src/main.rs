@@ -51,27 +51,27 @@ fn faint(text: &str) -> egui::RichText {
     egui::RichText::new(text).color(theme::TEXT_FAINT)
 }
 
-fn primary_button(text: &str) -> egui::Button {
+fn primary_button(text: &str) -> egui::Button<'_> {
     egui::Button::new(egui::RichText::new(text).color(theme::ON_GREEN).strong())
         .fill(theme::GREEN)
         .min_size(egui::vec2(0.0, 30.0))
 }
 
-fn ghost_button(text: &str) -> egui::Button {
+fn ghost_button(text: &str) -> egui::Button<'_> {
     egui::Button::new(egui::RichText::new(text))
         .fill(theme::SURFACE)
         .stroke(stroke_1(theme::BORDER))
         .min_size(egui::vec2(0.0, 30.0))
 }
 
-fn danger_button(text: &str) -> egui::Button {
+fn danger_button(text: &str) -> egui::Button<'_> {
     egui::Button::new(egui::RichText::new(text).color(theme::RED))
         .fill(egui::Color32::TRANSPARENT)
         .stroke(stroke_1(theme::BORDER))
         .min_size(egui::vec2(0.0, 24.0))
 }
 
-fn small_button(text: &str) -> egui::Button {
+fn small_button(text: &str) -> egui::Button<'_> {
     egui::Button::new(egui::RichText::new(text).size(12.0))
         .fill(theme::SURFACE)
         .stroke(stroke_1(theme::BORDER))
