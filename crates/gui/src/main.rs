@@ -14,27 +14,25 @@ use logtools_app::{CommandResult, Presenter};
 mod theme {
     use crate::egui::Color32;
 
-    pub const BG: Color32 = Color32::from_rgb(0x09, 0x09, 0x0A); // поля ввода, лог
-    pub const PANEL: Color32 = Color32::from_rgb(0x0E, 0x0E, 0x10); // панели, окно
-    pub const SURFACE: Color32 = Color32::from_rgb(0x16, 0x16, 0x19); // кнопки, полосы таблиц
+    pub const BG: Color32 = Color32::from_rgb(0x09, 0x09, 0x0A);
+    pub const PANEL: Color32 = Color32::from_rgb(0x0E, 0x0E, 0x10);
+    pub const SURFACE: Color32 = Color32::from_rgb(0x16, 0x16, 0x19);
     pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x1E, 0x1E, 0x22);
     pub const SURFACE_ACTIVE: Color32 = Color32::from_rgb(0x27, 0x27, 0x2C);
 
-    // Границы
     pub const BORDER: Color32 = Color32::from_rgb(0x26, 0x26, 0x2B);
     pub const BORDER_HOVER: Color32 = Color32::from_rgb(0x3B, 0x3B, 0x42);
 
-    // Текст
     pub const TEXT: Color32 = Color32::from_rgb(0xEB, 0xEB, 0xE7);
     pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x8B, 0x8B, 0x86);
     pub const TEXT_FAINT: Color32 = Color32::from_rgb(0x5E, 0x5E, 0x5A);
 
-    // Акцент
     pub const GREEN: Color32 = Color32::from_rgb(0x0F, 0xDB, 0x92);
     pub const GREEN_DIM: Color32 = Color32::from_rgb(0x0B, 0x93, 0x66);
     pub const ON_GREEN: Color32 = Color32::from_rgb(0x05, 0x0D, 0x0A);
 
-    // Статусы
+    pub const LOG_KEYWORD: Color32 = Color32::from_rgb(0x22, 0xAF, 0x77);
+
     pub const RED: Color32 = Color32::from_rgb(0xEC, 0x6A, 0x88);
     pub const AMBER: Color32 = Color32::from_rgb(0xE0, 0xAF, 0x5F);
 }
@@ -131,6 +129,32 @@ fn log_line_color(line: &str) -> egui::Color32 {
     } else {
         theme::TEXT_MUTED
     }
+}
+
+fn log_line_job(ui: &egui::Ui, line: &str) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let color = log_line_color(line);
+    let is_alert = color == theme::RED || color == theme::AMBER;
+
+    let (first, rest) = match line.find(char::is_whitespace) {
+        Some(idx) => (&line[..idx], &line[idx..]),
+        None => (line, ""),
+    };
+
+    if is_alert || first.is_empty() {
+        job.append(line, 0.0, egui::TextFormat::simple(font, color));
+    } else {
+        job.append(
+            first,
+            0.0,
+            egui::TextFormat::simple(font.clone(), theme::LOG_KEYWORD),
+        );
+        job.append(rest, 0.0, egui::TextFormat::simple(font, color));
+    }
+
+    job
 }
 
 fn install_fonts(ctx: &egui::Context) {
@@ -564,69 +588,76 @@ impl LogtoolsApp {
         }
     }
 
-    fn ui_operation_status(&self, ui: &mut egui::Ui) {
-        if self.progress.is_none() && self.message.is_none() && self.log_lines.is_empty() {
+    fn has_status_content(&self) -> bool {
+        self.progress.is_some() || self.message.is_some() || !self.log_lines.is_empty()
+    }
+
+    fn show_status_panel(&self, ctx: &egui::Context) {
+        if !self.has_status_content() {
             return;
         }
 
-        ui.add_space(2.0);
-
-        if self.message.is_some() || self.progress.is_some() {
-            ui.horizontal(|ui| {
-                if self.busy {
-                    ui.add(egui::Spinner::new().size(14.0));
-                    ui.add_space(2.0);
-                }
-
-                if let Some(msg) = &self.message {
-                    ui.label(egui::RichText::new(msg).strong());
-                }
-
-                if let Some((pos, total)) = self.progress {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            egui::RichText::new(format!("{} / {}", pos, total))
-                                .monospace()
-                                .color(theme::TEXT_MUTED),
-                        );
-                    });
-                }
-            });
-
-            ui.add_space(4.0);
-        }
-
-        if let Some((pos, total)) = self.progress {
-            let fraction = if total > 0 {
-                (pos as f32 / total as f32).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-
-            zed_progress_bar(ui, fraction);
-        }
-
-        if !self.log_lines.is_empty() {
-            let lines = &self.log_lines;
-
+        egui::TopBottomPanel::bottom("status_panel").show(ctx, |ui| {
             ui.add_space(4.0);
 
-            ui.group(|ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("status_log")
-                    .max_height(150.0)
-                    .auto_shrink(false)
-                    .show(ui, |ui| {
-                        let start = lines.len().saturating_sub(200);
+            if self.message.is_some() || self.progress.is_some() {
+                ui.horizontal(|ui| {
+                    if self.busy {
+                        ui.add(egui::Spinner::new().size(14.0));
+                        ui.add_space(2.0);
+                    }
 
-                        for line in &lines[start..] {
-                            ui.monospace(
-                                egui::RichText::new(line.as_str()).color(log_line_color(line)),
+                    if let Some(msg) = &self.message {
+                        ui.label(egui::RichText::new(msg).monospace().strong());
+                    }
+
+                    if let Some((pos, total)) = self.progress {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{} / {}", pos, total))
+                                    .monospace()
+                                    .color(theme::TEXT_MUTED),
                             );
-                        }
-                    });
-            });
-        }
+                        });
+                    }
+                });
+
+                ui.add_space(4.0);
+            }
+
+            if let Some((pos, total)) = self.progress {
+                let fraction = if total > 0 {
+                    (pos as f32 / total as f32).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+
+                zed_progress_bar(ui, fraction);
+            }
+
+            if !self.log_lines.is_empty() {
+                let lines = &self.log_lines;
+
+                ui.add_space(4.0);
+
+                ui.group(|ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("status_log")
+                        .max_height(180.0)
+                        .auto_shrink(false)
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            let start = lines.len().saturating_sub(200);
+
+                            for line in &lines[start..] {
+                                ui.add(egui::Label::new(log_line_job(ui, line)));
+                            }
+                        });
+                });
+            }
+
+            ui.add_space(4.0);
+        });
     }
 
     fn ui_bases(&mut self, ui: &mut egui::Ui) {
@@ -644,8 +675,6 @@ impl LogtoolsApp {
             });
         });
 
-        ui.add_space(8.0);
-        self.ui_operation_status(ui);
         ui.add_space(8.0);
         ui.separator();
 
@@ -770,9 +799,6 @@ impl LogtoolsApp {
             }
         });
 
-        ui.add_space(8.0);
-        self.ui_operation_status(ui);
-
         let preview = self.search_preview.clone();
 
         if !preview.is_empty() {
@@ -866,9 +892,6 @@ impl LogtoolsApp {
                 );
             }
         });
-
-        ui.add_space(8.0);
-        self.ui_operation_status(ui);
 
         let preview = self.search_preview.clone();
 
@@ -1211,6 +1234,8 @@ impl eframe::App for LogtoolsApp {
                     ui.add_space(6.0);
                 });
             });
+
+        self.show_status_panel(ctx);
 
         egui::CentralPanel::default().show(ctx, |ui| match self.screen {
             Screen::Bases => self.ui_bases(ui),

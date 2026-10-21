@@ -1,4 +1,4 @@
-//! общий слой для CLI и GUI через Presenter и CommandResult
+
 
 use std::fs;
 use std::path::{Path, PathBuf};
