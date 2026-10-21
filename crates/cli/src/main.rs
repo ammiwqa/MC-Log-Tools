@@ -1,24 +1,16 @@
-use std::fs;
+
+
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use console::Style;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
-use lt_core::discovery;
-use lt_core::events::CoreEvent;
-use lt_core::operations;
+use logtools_app::{CommandResult, Presenter};
 
-fn format_error_stats(stats: &lt_core::ErrorStats) -> String {
-    match (stats.file_errors, stats.parse_errors) {
-        (0, 0) => String::new(),
-        (f, 0) => format!("({} file errors)", f),
-        (0, p) => format!("({} parse errors)", p),
-        (f, p) => format!("({} file errors, {} parse errors)", f, p),
-    }
-}
+// =========================
+// CLI-clap
+// =========================
 
 #[derive(Parser)]
 #[command(
@@ -131,513 +123,159 @@ enum Commands {
     },
 }
 
-fn read_paths_from_file<P: AsRef<Path>>(file_path: P) -> Result<Vec<String>, std::io::Error> {
-    let content = fs::read_to_string(file_path)?;
+// =========================
+// CONSOLE PRESENTER
+// =========================
 
-    let paths: Vec<String> = content
-        .lines()
-        .map(|line| line.trim())
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(String::from)
-        .collect();
-
-    Ok(paths)
+struct ConsolePresenter {
+    bar: Option<ProgressBar>,
 }
 
-fn make_bar(prefix: &str) -> ProgressBar {
-    let bright_cyan_style = Style::new().cyan().bold();
-    let pb = ProgressBar::new(1);
+impl ConsolePresenter {
+    fn new() -> Self {
+        Self { bar: None }
+    }
 
-    pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(50));
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}]")
-            .unwrap()
-            .progress_chars("=>-"),
-    );
+    fn make_bar() -> ProgressBar {
+        let pb = ProgressBar::new(1);
 
-    pb.set_prefix(format!("{}", bright_cyan_style.apply_to(prefix)));
-    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(50));
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}]")
+                .unwrap()
+                .progress_chars("=>-"),
+        );
 
-    pb
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        pb
+    }
+    fn finish_bar(&mut self) {
+        if let Some(pb) = self.bar.take() {
+            pb.finish_and_clear();
+        }
+    }
 }
 
-fn spawn_drawer(
-    pb: ProgressBar,
-    rx: std::sync::mpsc::Receiver<CoreEvent>,
-) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
-        let bright_cyan_style = Style::new().cyan().bold();
-        let bright_green_style = Style::new().green().bold();
+impl Presenter for ConsolePresenter {
+    fn progress(&mut self, pos: u64, total: u64) {
+        let pb = self
+            .bar
+            .get_or_insert_with(Self::make_bar);
 
-        while let Ok(ev) = rx.recv() {
-            match ev {
-                CoreEvent::Progress { pos, total } => {
-                    pb.set_length(total);
-                    pb.set_position(pos);
-                }
-                CoreEvent::Message(msg) => {
-                    pb.set_prefix(format!("{}", bright_cyan_style.apply_to(msg)));
-                }
-                CoreEvent::DedupCompleted { duplicate_files } => {
-                    if duplicate_files > 0 {
-                        pb.suspend(|| {
-                            println!(
-                                "   {} {} duplicate files skipped",
-                                bright_green_style.apply_to("Dedup"),
-                                duplicate_files
-                            );
-                        });
-                    }
-                }
-                CoreEvent::GzipParsingCompleted {
-                    files,
-                    lines,
-                    file_errors,
-                    parse_errors,
-                } => {
-                    if files > 0 {
-                        pb.suspend(|| {
-                            println!(
-                                "   {} {} files -> {} lines {}",
-                                bright_green_style.apply_to("Parsing"),
-                                files,
-                                lines,
-                                format_error_counts(file_errors, parse_errors)
-                            );
-                        });
-                    }
-                }
-                CoreEvent::LatestParsingCompleted {
-                    files,
-                    lines,
-                    file_errors,
-                    parse_errors,
-                } => {
-                    if files > 0 {
-                        pb.suspend(|| {
-                            println!(
-                                "   {} latest.log files -> {} lines {}",
-                                bright_green_style.apply_to("Parsing latest"),
-                                lines,
-                                format_error_counts(file_errors, parse_errors)
-                            );
-                        });
-                    }
-                }
-                CoreEvent::WritingCompleted { lines } => {
-                    pb.suspend(|| {
-                        println!(
-                            "   {} {} lines written",
-                            bright_green_style.apply_to("Writing"),
-                            lines
-                        );
-                    });
-                }
-            }
+        pb.set_length(total);
+        pb.set_position(pos);
+    }
+
+    fn message(&mut self, msg: &str) {
+        if let Some(pb) = &mut self.bar {
+            pb.set_prefix(msg.to_string());
+        }
+    }
+
+    fn log(&mut self, line: &str) {
+        if let Some(pb) = &self.bar {
+            pb.suspend(|| {
+                println!("{}", line);
+                let _ = std::io::stdout().flush();
+            });
+        } else {
+            println!("{}", line);
+        }
+    }
+
+    fn error(&mut self, msg: &str) {
+        self.finish_bar();
+        eprintln!("{}", msg);
+    }
+
+    fn confirm(&mut self, prompt: &str) -> bool {
+        self.finish_bar();
+        print!("{} ", prompt);
+
+        let _ = std::io::stdout().flush();
+
+        let mut answer = String::new();
+
+        if std::io::stdin().read_line(&mut answer).is_err() {
+            return false;
         }
 
-        pb.finish_and_clear();
-    })
-}
+        let answer = answer.trim().to_lowercase();
 
-fn format_error_counts(file_errors: usize, parse_errors: usize) -> String {
-    let mut parts = Vec::new();
-
-    if file_errors > 0 {
-        parts.push(format!("{} file errors", file_errors));
+        answer == "y" || answer == "yes"
     }
 
-    if parse_errors > 0 {
-        parts.push(format!("{} parse errors", parse_errors));
-    }
-
-    if parts.is_empty() {
-        String::new()
-    } else {
-        format!("({})", parts.join(", "))
+    fn open_file(&mut self, path: &PathBuf) {
+        open_in_system_app(path);
     }
 }
+
+fn open_in_system_app(path: &Path) {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path.to_string_lossy()])
+            .spawn();
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(path).spawn();
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+    }
+}
+
+fn exit_code_of(result: CommandResult) -> i32 {
+    match result {
+        CommandResult::Ok => 0,
+        CommandResult::ExitCode(code) => code,
+        CommandResult::Err(_) => 1,
+    }
+}
+
+// =========================
+// MAIN
+// =========================
 
 fn main() {
     let cli = Cli::parse();
+    let mut presenter = ConsolePresenter::new();
 
-    let bright_green_style = Style::new().green().bold();
-    let bright_cyan_style = Style::new().cyan().bold();
-
-    match cli.command {
+    let result = match cli.command {
         Commands::CreateBase {
             paths,
             from_file,
             name,
-        } => {
-            let mut all_paths = paths;
-
-            if let Some(file_path) = from_file {
-                match read_paths_from_file(&file_path) {
-                    Ok(file_paths) => all_paths.extend(file_paths),
-                    Err(e) => {
-                        eprintln!("Ошибка чтения файла '{}': {}", file_path, e);
-                        std::process::exit(1);
-                    }
-                }
-            }
-
-            if all_paths.is_empty() {
-                eprintln!("No paths");
-                std::process::exit(1);
-            }
-
-            if name.is_empty() {
-                return;
-            }
-
-            if let Err(e) = tools::validate_windows_filename(&name) {
-                println!("\n{}", tools::format_filename_error(&name, &e));
-                return;
-            }
-
-            let pb = make_bar("Parsing");
-            let (tx, rx) = operations::event_channel();
-            let drawer = spawn_drawer(pb.clone(), rx);
-
-
-            match operations::create_base(all_paths, name.clone(), tx.clone()) {
-                Ok(result) => {
-                    drop(tx);
-                    drawer.join().unwrap();
-
-                    println!(
-                        "   {} {} lines -> {}",
-                        bright_green_style.apply_to("Writing"),
-                        result.total_lines,
-                        name
-                    );
-                }
-
-                Err(e) => {
-                    drop(tx);
-                    let _ = drawer.join();
-                    eprintln!("Error creating base: {}", e);
-                }
-            }
-        }
+        } => logtools_app::run_create_base(paths, from_file, name, &mut presenter),
 
         Commands::Search { base_name, text } => {
-            if base_name.is_empty() || text.is_empty() {
-                return;
-            }
-
-            let exit_file_name = tools::get_valid_file_name_with_timestamp(&text);
-            let exit_file_path = tools::get_results_file_path(&exit_file_name);
-
-            let search_handle = match operations::start_search(&base_name, &text) {
-                Ok(h) => h,
-                Err(e) => {
-                    eprintln!("Error starting search: {}", e);
-                    return;
-                }
-            };
-
-            let max_lines = search_handle.progress.get_max_progress();
-
-            let search_pb = Arc::new(make_bar("Searching"));
-            search_pb.set_length(max_lines);
-
-            loop {
-                search_pb.set_position(search_handle.progress.get_progress());
-
-                if search_handle.handle.is_finished() {
-                    break;
-                }
-
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-
-            let results = match operations::wait_search(search_handle) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("Search failed: {}", e);
-                    return;
-                }
-            };
-
-            let results_len = results.len();
-
-            search_pb.set_position(max_lines);
-            search_pb.finish_and_clear();
-
-            println!(
-                "   {} {} lines -> {} founds",
-                bright_green_style.apply_to("Searching"),
-                max_lines,
-                results_len
-            );
-
-            let write_job = write_result::write_results_async(results, exit_file_path.clone());
-
-            let write_pb = make_bar("Writing");
-            write_pb.set_length(write_job.progress.get_total());
-
-            loop {
-                write_pb.set_position(write_job.progress.get_written());
-
-                if write_job.handle.is_finished() {
-                    break;
-                }
-
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-
-            if let Err(e) = write_job.handle.join() {
-                eprintln!("Error writing results: {:?}", e);
-                return;
-            }
-
-            write_pb.finish_and_clear();
-
-            println!(
-                "   {} {} founds -> ({})",
-                bright_green_style.apply_to("Writing"),
-                results_len,
-                exit_file_path
-            );
-
-            Command::new("cmd")
-                .args(["/C", "start", "", &exit_file_path])
-                .spawn()
-                .unwrap();
+            logtools_app::run_search(base_name, text, &mut presenter)
         }
 
-        Commands::UpdateBase { name } => {
-            if name.is_empty() {
-                return;
-            }
+        Commands::UpdateBase { name } => logtools_app::run_update_base(name, &mut presenter),
 
-            let update_pb = make_bar("Updating");
-            let (tx, rx) = operations::event_channel();
-            let drawer = spawn_drawer(update_pb.clone(), rx);
+        Commands::ListBases => logtools_app::run_list_bases(&mut presenter),
 
-            match operations::update_base(&name, tx.clone()) {
-                Ok(result) => {
-                    drop(tx);
-                    drawer.join().unwrap();
-
-                    if result.no_new_files {
-                        println!(
-                            "   {} No new logs to parse",
-                            bright_green_style.apply_to("Update")
-                        );
-                        return;
-                    }
-
-                    if result.new_gz_files > 0 {
-                        println!(
-                            "   {} {} new gz files -> {} lines {}",
-                            bright_green_style.apply_to("Parsing"),
-                            result.new_gz_files,
-                            result.parsed_gz_lines,
-                            format_error_stats(&result.gz_errors)
-                        );
-                    }
-
-                    if result.new_latest_files > 0 {
-                        println!(
-                            "   {} {} latest files -> {} lines {}",
-                            bright_green_style.apply_to("Parsing latest"),
-                            result.new_latest_files,
-                            result.parsed_latest_lines,
-                            format_error_stats(&result.latest_errors)
-                        );
-                    }
-
-                    println!(
-                        "   {} {} total lines -> {}",
-                        bright_green_style.apply_to("Writing"),
-                        result.total_lines,
-                        name
-                    );
-                }
-
-                Err(e) => {
-                    drop(tx);
-                    let _ = drawer.join();
-                    eprintln!("Error updating base: {}", e);
-                }
-            }
+        Commands::Config { param, var } => {
+            logtools_app::run_config(param, var, &mut presenter)
         }
 
-        Commands::ListBases => match read_base_info::list_bases() {
-            Ok(bases) => {
-                read_base_info::print_bases_table(&bases);
-            }
-            Err(e) => {
-                eprintln!("Error listing bases: {}", e);
-            }
-        },
-
-        Commands::Config { param, var } => match (param, var) {
-            (None, _) => {
-                let map = tools::config::load_config();
-
-                if map.is_empty() {
-                    println!("No config parameters set.");
-                } else {
-                    for (k, v) in &map {
-                        println!("{:<20} {}", k, v.as_str().unwrap_or(&v.to_string()));
-                    }
-                }
-            }
-
-            (Some(param), None) => match tools::config::get_config_param(&param) {
-                Some(value) => println!("{}", value),
-                None => eprintln!("Parameter '{}' is not set", param),
-            },
-
-            (Some(param), Some(var)) => {
-                let mut map = tools::config::load_config();
-
-                map.insert(
-                    param.clone(),
-                    serde_json::Value::String(var.trim().to_string()),
-                );
-
-                match tools::config::save_config(&map) {
-                    Ok(()) => {
-                        println!(
-                            "   {} {} -> \"{}\"",
-                            bright_green_style.apply_to("Config"),
-                            param,
-                            var
-                        );
-                    }
-
-                    Err(e) => {
-                        eprintln!("Error saving config: {}", e);
-                        std::process::exit(1);
-                    }
-                }
-            }
-        },
-
-        Commands::Delete { name, yes } => {
-            let confirm_enabled = tools::config::get_config_param("confirm_delete")
-                .map(|v| v != "false" && v != "0" && v != "no")
-                .unwrap_or(true);
-
-            if confirm_enabled && !yes {
-                println!("   Delete base '{}' (config + logs)? [y/N]", name);
-
-                let mut answer = String::new();
-
-                if std::io::stdin().read_line(&mut answer).is_err() {
-                    return;
-                }
-
-                let answer = answer.trim().to_lowercase();
-
-                if answer != "y" && answer != "yes" {
-                    println!("   Cancelled");
-                    return;
-                }
-            }
-
-            match read_base_info::delete_base(&name) {
-                Ok(()) => {
-                    println!("   {} {}", bright_green_style.apply_to("Deleted"), name)
-                }
-                Err(e) => eprintln!("Error deleting base: {}", e),
-            }
-        }
+        Commands::Delete { name, yes } => logtools_app::run_delete(name, yes, &mut presenter),
 
         Commands::Discover {
             root,
             out,
             es,
             no_everything,
-        } => {
-            let out_path = out.unwrap_or_else(|| {
-                tools::get_results_file_path(&tools::get_valid_file_name("mc_log_dirs"))
-            });
+        } => logtools_app::run_discover(root, out, es, no_everything, &mut presenter),
+    };
 
-            let start = std::time::Instant::now();
-            let mut discovery_result = None;
+    presenter.finish_bar();
 
-            if !no_everything {
-                match discovery::discover_everything(es.as_ref()) {
-                    Ok(d) => {
-                        let source_str = match d.source {
-                            discovery::DiscoverSource::Sdk => "Everything SDK".to_string(),
-                            discovery::DiscoverSource::Cli => "Everything CLI".to_string(),
-                            discovery::DiscoverSource::Walk => unreachable!(),
-                        };
-
-                        println!(
-                            "   {} {}",
-                            bright_cyan_style.apply_to("Scanning"),
-                            source_str
-                        );
-
-                        discovery_result = Some(d.dirs);
-                    }
-
-                    Err(_e) => {}
-                }
-            }
-
-            let found = match discovery_result {
-                Some(dirs) => dirs,
-
-                None => {
-                    let scan_root = match root {
-                        Some(r) => PathBuf::from(r),
-                        None => match std::env::var("USERPROFILE") {
-                            Ok(home) => PathBuf::from(home),
-                            Err(_) => {
-                                eprintln!("Cannot determine user home directory");
-                                std::process::exit(1);
-                            }
-                        },
-                    };
-
-                    if !scan_root.is_dir() {
-                        eprintln!("Not a directory: {}", scan_root.display());
-                        std::process::exit(1);
-                    }
-
-                    println!(
-                        "   {} {}",
-                        bright_cyan_style.apply_to("Scanning"),
-                        scan_root.display()
-                    );
-
-                    if !no_everything {
-                        eprintln!(
-                            "   Tip: install Everything (https://www.voidtools.com/) and Everything SDK for an instant whole-PC scan.\n   Then set the DLL path: logtools config everything_dll \"<path to Everything64.dll>\""
-                        );
-                    }
-
-                    discovery::discover_walk(&scan_root)
-                }
-            };
-
-            fs::write(&out_path, found.join("\n")).unwrap_or_else(|e| {
-                eprintln!("Error writing output file: {}", e);
-                std::process::exit(1);
-            });
-
-            println!(
-                "   {} {} log directories -> ({}) in {:.1}s",
-                bright_green_style.apply_to("Discovered"),
-                found.len(),
-                out_path,
-                start.elapsed().as_secs_f32()
-            );
-
-            println!(
-                "   Create a global base: logtools cb <NAME> --from-file \"{}\"",
-                out_path
-            );
-        }
-    }
+    std::process::exit(exit_code_of(result));
 }
