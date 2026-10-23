@@ -1,17 +1,14 @@
+use hash_utils::{compute_file_hash, compute_gzip_payload_hash};
 use log_parser::{parse_latest, parse_logs, ErrorStats};
 use progress::ProgressReporter;
 use rayon::prelude::*;
 use read_base_info::{get_zst_path, load_log, save_log, LatestInfo};
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use xxhash_rust::xxh3::Xxh3;
 use zip_writer::write_logs_to_zstd_with_progress;
-
-const HASH_BUFFER_SIZE: usize = 1024 * 1024;
 
 fn get_dir(path: &str) -> String {
     PathBuf::from(path)
@@ -19,152 +16,6 @@ fn get_dir(path: &str) -> String {
         .unwrap_or_else(|| Path::new(""))
         .to_string_lossy()
         .into_owned()
-}
-
-fn compute_file_hash(path: &str) -> io::Result<String> {
-    #[cfg(windows)]
-    let file = {
-        use std::os::windows::fs::OpenOptionsExt;
-
-        File::options()
-            .read(true)
-            .share_mode(0x0000_0001 | 0x0000_0002 | 0x0000_0004)
-            .open(path)?
-    };
-
-    #[cfg(not(windows))]
-    let file = File::open(path)?;
-
-    let mut reader = BufReader::with_capacity(HASH_BUFFER_SIZE, file);
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; HASH_BUFFER_SIZE];
-
-    loop {
-        let bytes_read = reader.read(&mut buffer)?;
-
-        if bytes_read == 0 {
-            break;
-        }
-
-        hasher.update(&buffer[..bytes_read]);
-    }
-
-    Ok(hex::encode(hasher.finalize()))
-}
-
-fn skip_gzip_string(file: &mut File) -> io::Result<()> {
-    let mut buffer = [0u8; 256];
-
-    loop {
-        let n = file.read(&mut buffer)?;
-
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "Unterminated gzip header string",
-            ));
-        }
-
-        if let Some(pos) = buffer[..n].iter().position(|&b| b == 0) {
-            let unread = n - pos - 1;
-
-            if unread > 0 {
-                file.seek(SeekFrom::Current(-(unread as i64)))?;
-            }
-
-            return Ok(());
-        }
-    }
-}
-
-fn compute_gzip_payload_hash(path: &str) -> io::Result<u64> {
-    #[cfg(windows)]
-    let mut file = {
-        use std::os::windows::fs::OpenOptionsExt;
-
-        File::options()
-            .read(true)
-            .share_mode(0x0000_0001 | 0x0000_0002 | 0x0000_0004)
-            .open(path)?
-    };
-
-    #[cfg(not(windows))]
-    let mut file = File::open(path)?;
-
-    let file_len = file.metadata()?.len();
-
-    let mut header = [0u8; 10];
-    file.read_exact(&mut header)?;
-
-    if header[0] != 0x1f || header[1] != 0x8b || header[2] != 8 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Invalid gzip header",
-        ));
-    }
-
-    let flags = header[3];
-
-    if flags & 0xE0 != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Reserved gzip flags are set",
-        ));
-    }
-
-    if flags & 0x04 != 0 {
-        let mut xlen = [0u8; 2];
-        file.read_exact(&mut xlen)?;
-
-        let extra_len = u16::from_le_bytes(xlen) as i64;
-        file.seek(SeekFrom::Current(extra_len))?;
-    }
-
-    if flags & 0x08 != 0 {
-        skip_gzip_string(&mut file)?;
-    }
-
-    if flags & 0x10 != 0 {
-        skip_gzip_string(&mut file)?;
-    }
-
-    if flags & 0x02 != 0 {
-        file.seek(SeekFrom::Current(2))?;
-    }
-
-    let data_start = file.stream_position()?;
-
-    let data_end = file_len.checked_sub(8).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Gzip file is too short for trailer: {}", path),
-        )
-    })?;
-
-    if data_start > data_end {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "Invalid gzip structure: path={}, file_len={}, payload_start={}",
-                path, file_len, data_start
-            ),
-        ));
-    }
-
-    let mut hasher = Xxh3::new();
-    let mut buffer = [0u8; HASH_BUFFER_SIZE];
-    let mut remaining = data_end - data_start;
-
-    while remaining > 0 {
-        let to_read = remaining.min(buffer.len() as u64) as usize;
-
-        file.read_exact(&mut buffer[..to_read])?;
-        hasher.update(&buffer[..to_read]);
-
-        remaining -= to_read as u64;
-    }
-
-    Ok(hasher.digest())
 }
 
 #[derive(Debug)]
@@ -264,7 +115,7 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
             candidates_ref.par_iter().enumerate().for_each_with(
                 tx,
                 |sender, (index, candidate)| {
-                    let result = compute_gzip_payload_hash(&candidate.2);
+                    let result = compute_gzip_payload_hash(Path::new(&candidate.2));
                     let _ = sender.send((index, result));
                 },
             );
@@ -331,7 +182,7 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
             checks_ref.par_iter().enumerate().for_each_with(
                 tx,
                 |sender, (index, (path, stored_hash, last_line))| {
-                    let result = match compute_file_hash(path) {
+                    let result = match compute_file_hash(Path::new(path)) {
                         Ok(current_hash) if current_hash != *stored_hash => {
                             Some((path.clone(), *last_line))
                         }

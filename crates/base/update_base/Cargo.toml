@@ -11,11 +11,8 @@ zstd = { version = "0.13", features = ["zstdmt"] }
 num_cpus = "1"
 
 rayon = "1.10"
-xxhash-rust = { version = "0.8", features = ["xxh3"] }
-sha2 = "0.10"
-hex = "0.4"
-
 get_logfiles = { path = "../create_base/get_logfiles" }
+hash_utils = { path = "../hash_utils" }
 log_parser = { path = "../create_base/log_parser" }
 progress = { path = "../progress" }
 read_base_info = { path = "../read_base_info" }

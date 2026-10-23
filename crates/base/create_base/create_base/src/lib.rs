@@ -1,19 +1,16 @@
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::time::Instant;
 
+use hash_utils::compute_gzip_payload_hash;
 use progress::{ProgressReporter, StageKind, StageStats};
 
 use log_parser::ErrorStats;
 use rayon::prelude::*;
 use read_base_info::{LatestInfo, PathEntry, TimeInfo, save_log};
-use xxhash_rust::xxh3::Xxh3;
 
-const HASH_BUFFER_SIZE: usize = 1024 * 1024;
-const DEBUG_HASH_EVERY: usize = 100;
 const DEBUG: bool = false;
 
 #[derive(Debug)]
@@ -47,93 +44,6 @@ fn file_name_of(path: &str) -> String {
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| path.to_string())
-}
-
-fn skip_gzip_string(file: &mut File) -> io::Result<()> {
-    let mut byte = [0u8; 1];
-
-    loop {
-        file.read_exact(&mut byte)?;
-
-        if byte[0] == 0 {
-            return Ok(());
-        }
-    }
-}
-
-fn compute_gzip_payload_hash(path: &Path) -> io::Result<u64> {
-    let mut file = File::open(path)?;
-    let file_len = file.metadata()?.len();
-
-    let mut header = [0u8; 10];
-    file.read_exact(&mut header)?;
-
-    if header[0] != 0x1f || header[1] != 0x8b || header[2] != 8 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Invalid gzip header",
-        ));
-    }
-
-    let flags = header[3];
-
-    if flags & 0xE0 != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Reserved gzip flags are set",
-        ));
-    }
-
-    if flags & 0x04 != 0 {
-        let mut xlen = [0u8; 2];
-        file.read_exact(&mut xlen)?;
-
-        let xlen = u16::from_le_bytes(xlen) as i64;
-        file.seek(SeekFrom::Current(xlen))?;
-    }
-
-    if flags & 0x08 != 0 {
-        skip_gzip_string(&mut file)?;
-    }
-
-    if flags & 0x10 != 0 {
-        skip_gzip_string(&mut file)?;
-    }
-
-    if flags & 0x02 != 0 {
-        file.seek(SeekFrom::Current(2))?;
-    }
-
-    let payload_start = file.stream_position()?;
-
-    if file_len < payload_start + 8 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "Gzip file is too short: file_len={}, payload_start={}, remaining={}",
-                file_len,
-                payload_start,
-                file_len.saturating_sub(payload_start)
-            ),
-        ));
-    }
-
-    let payload_len = file_len - payload_start - 8;
-
-    let mut hasher = Xxh3::new();
-    let mut buffer = vec![0u8; HASH_BUFFER_SIZE];
-    let mut remaining = payload_len;
-
-    while remaining > 0 {
-        let to_read = remaining.min(buffer.len() as u64) as usize;
-
-        file.read_exact(&mut buffer[..to_read])?;
-        hasher.update(&buffer[..to_read]);
-
-        remaining -= to_read as u64;
-    }
-
-    Ok(hasher.digest())
 }
 
 pub fn create_base<P: ProgressReporter + ?Sized>(
@@ -216,61 +126,86 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
         }
     }
 
-    let hash_total = candidates.len();
+    let mut sized_candidates: Vec<(String, String, String, u64)> =
+        Vec::with_capacity(candidates.len());
 
-    debug_stage(&format!(
-        "Prepared {} files for parallel hashing",
-        hash_total
-    ));
+    for (path, normalized_path, short) in candidates {
+        let size = fs::metadata(Path::new(&normalized_path))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        sized_candidates.push((path, normalized_path, short, size));
+    }
 
-    progress.set_message("Hashing gzip files");
-    progress.set_total(hash_total as u64);
+    let mut size_groups: HashMap<u64, Vec<usize>> = HashMap::new();
+    for (index, (_, _, _, size)) in sized_candidates.iter().enumerate() {
+        size_groups.entry(*size).or_default().push(index);
+    }
 
-    let hash_start = Instant::now();
+    let mut to_hash: Vec<(usize, String, String, String)> = Vec::new();
+    for (index, (path, normalized_path, short, _)) in sized_candidates.iter().enumerate() {
+        let group_len = size_groups
+            .get(&sized_candidates[index].3)
+            .map(|v| v.len())
+            .unwrap_or(1);
+        if group_len > 1 {
+            to_hash.push((index, path.clone(), normalized_path.clone(), short.clone()));
+        }
+    }
 
-    let (tx, rx) = mpsc::channel::<(usize, io::Result<u64>)>();
+    let hash_total = to_hash.len();
 
     let mut hash_results: Vec<Option<io::Result<u64>>> =
-        std::iter::repeat_with(|| None).take(hash_total).collect();
+        (0..sized_candidates.len()).map(|_| None).collect();
 
-    std::thread::scope(|scope| {
-        scope.spawn(|| {
-            candidates
-                .par_iter()
-                .enumerate()
-                .for_each_with(tx, |sender, (index, candidate)| {
-                    let result = compute_gzip_payload_hash(Path::new(&candidate.1));
+    if hash_total > 0 {
+        debug_stage(&format!(
+            "Files to hash (size groups > 1): {} of {} total",
+            hash_total,
+            sized_candidates.len()
+        ));
 
-                    let _ = sender.send((index, result));
-                });
-        });
+        progress.set_message("Hashing gzip files");
+        progress.set_total(hash_total as u64);
 
-        for (completed, (index, result)) in rx.into_iter().enumerate() {
+        let hash_start = Instant::now();
+
+        let results: Vec<(usize, io::Result<u64>)> = to_hash
+            .par_iter()
+            .map(|(index, _path, normalized_path, _short)| {
+                let result = compute_gzip_payload_hash(Path::new(normalized_path));
+                progress.inc(1);
+                (*index, result)
+            })
+            .collect();
+
+        for (index, result) in results {
             hash_results[index] = Some(result);
-
-            progress.inc(1);
-
-            if DEBUG && ((completed + 1) % DEBUG_HASH_EVERY == 0 || completed + 1 == hash_total) {
-                debug_stage(&format!("Hashed {}/{} files", completed + 1, hash_total));
-            }
         }
-    });
 
-    debug_stage(&format!(
-        "Parallel hashing complete: {} files, elapsed={:?}",
-        hash_total,
-        hash_start.elapsed()
-    ));
-
+        debug_stage(&format!(
+            "Parallel hashing complete: {} files, elapsed={:?}",
+            hash_total,
+            hash_start.elapsed()
+        ));
+    } else {
+        debug_stage("No files need hashing (all files have unique sizes)");
+    }
 
     progress.set_message("Deduplicating gzip files");
 
-    for ((path, normalized_path, short), hash_result) in
-        candidates.into_iter().zip(hash_results.into_iter())
-    {
+    for (index, (path, normalized_path, short, size)) in sized_candidates.into_iter().enumerate() {
         let entry = entries_by_path.entry(path).or_default();
+        
+        let group_len = size_groups.get(&size).map(|v| v.len()).unwrap_or(1);
+        if group_len <= 1 {
+            if !entry.files.contains(&short) {
+                entry.files.push(short);
+            }
+            all_logs.push(normalized_path);
+            continue;
+        }
 
-        let hash_result = match hash_result {
+        let hash_result = match hash_results[index].take() {
             Some(result) => result,
             None => {
                 eprintln!(
