@@ -44,3 +44,9 @@ pub fn get_config_param(param: &str) -> Option<String> {
         .and_then(|v| v.as_str())
         .map(String::from)
 }
+
+pub fn save_config_param(param: &str, value: &str) -> Result<(), std::io::Error> {
+    let mut map = load_config();
+    map.insert(param.to_string(), Value::String(value.to_string()));
+    save_config(&map)
+}

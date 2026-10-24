@@ -758,6 +758,8 @@ impl LogtoolsApp {
                 if let Some(first) = names.first() {
                     self.search_base = first.clone();
                 }
+            } else if !names.contains(&self.search_base) {
+                self.search_base = names.first().cloned().unwrap_or_default();
             }
 
             ui.horizontal(|ui| {
@@ -789,6 +791,9 @@ impl LogtoolsApp {
                 .add_enabled(can_search, primary_button("Search"))
                 .clicked()
             {
+                let _ = tools::config::save_config_param("last_search_base", &self.search_base);
+                let _ = tools::config::save_config_param("last_search_text", &self.search_text);
+
                 self.spawn_command(
                     CmdKind::Search,
                     GuiCommand::Search {
@@ -1289,6 +1294,9 @@ fn main() -> eframe::Result<()> {
 
     app.cfg_everything_dll = tools::config::get_config_param("everything_dll").unwrap_or_default();
     app.cfg_confirm_delete = tools::config::get_config_param("confirm_delete").unwrap_or_default();
+
+    app.search_base = tools::config::get_config_param("last_search_base").unwrap_or_default();
+    app.search_text = tools::config::get_config_param("last_search_text").unwrap_or_default();
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
