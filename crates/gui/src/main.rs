@@ -39,6 +39,19 @@ mod theme {
     pub const AMBER: Color32 = Color32::from_rgb(0xE0, 0xAF, 0x5F);
 }
 
+fn strip_path_quotes(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    let trimmed = trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(trimmed);
+    let trimmed = trimmed
+        .strip_prefix('\'')
+        .and_then(|s| s.strip_suffix('\''))
+        .unwrap_or(trimmed);
+    trimmed.trim()
+}
+
 fn stroke_1(color: egui::Color32) -> egui::Stroke {
     egui::Stroke::new(1.0_f32, color)
 }
@@ -1128,7 +1141,7 @@ impl eframe::App for LogtoolsApp {
                             .collect();
 
                         let from_file = if self.create_from_file {
-                            Some(self.create_from_file_path.trim().to_string())
+                            Some(strip_path_quotes(self.create_from_file_path.trim()).to_string())
                         } else {
                             None
                         };

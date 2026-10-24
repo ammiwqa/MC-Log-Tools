@@ -42,8 +42,23 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 // Helpers
 // =========================
 
+fn normalize_path_arg(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    let trimmed = trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(trimmed);
+    let trimmed = trimmed
+        .strip_prefix('\'')
+        .and_then(|s| s.strip_suffix('\''))
+        .unwrap_or(trimmed);
+    trimmed.trim()
+}
+
 pub fn read_paths_from_file<P: AsRef<Path>>(file_path: P) -> Result<Vec<String>, std::io::Error> {
-    let content = fs::read_to_string(file_path)?;
+    let raw = file_path.as_ref().to_string_lossy().to_string();
+    let cleaned = normalize_path_arg(&raw).to_string();
+    let content = fs::read_to_string(&cleaned)?;
 
     let paths: Vec<String> = content
         .lines()
