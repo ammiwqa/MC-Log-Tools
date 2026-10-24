@@ -10,11 +10,12 @@ use tools;
 use hex::encode;
 
 use encoding_rs::WINDOWS_1251;
-use memchr::{memchr_iter, memmem};
+use memchr::{memchr, memchr_iter, memmem};
 
 use progress::ProgressReporter;
 
-const BUF_SIZE: usize = 10000;
+const BUF_SIZE: usize = 1024 * 1024;
+const COMP_BUF_SIZE: usize = 256 * 1024;
 
 #[derive(Default, Debug, Clone)]
 pub struct ErrorStats {
@@ -22,38 +23,42 @@ pub struct ErrorStats {
     pub parse_errors: usize,
 }
 
-pub fn parse_logs<P: ProgressReporter + ?Sized>(
+pub fn parse_logs<P: ProgressReporter + Sync + ?Sized>(
     files: Vec<String>,
     progress: &P,
 ) -> std::io::Result<(Vec<(i64, String)>, ErrorStats)> {
-    let results: Vec<_> = files
+    let (all, stats) = files
         .par_iter()
-        .map(|f| {
-            let res = process_file_gz(f);
-            progress.inc(1);
-            res
-        })
-        .collect();
-
-    let mut all = Vec::new();
-    let mut stats = ErrorStats::default();
-
-    for res in results {
-        match res {
-            Ok((mut v, s)) => {
-                all.append(&mut v);
-                stats.parse_errors += s.parse_errors;
-            }
-            Err(_e) => {
-                stats.file_errors += 1;
-            }
-        }
-    }
+        .fold(
+            || (Vec::with_capacity(4096), ErrorStats::default()),
+            |mut acc, f| {
+                match process_file_gz(f) {
+                    Ok((v, s)) => {
+                        acc.0.extend(v);
+                        acc.1.parse_errors += s.parse_errors;
+                    }
+                    Err(_e) => {
+                        acc.1.file_errors += 1;
+                    }
+                }
+                progress.inc(1);
+                acc
+            },
+        )
+        .reduce(
+            || (Vec::new(), ErrorStats::default()),
+            |mut a, b| {
+                a.0.extend(b.0);
+                a.1.parse_errors += b.1.parse_errors;
+                a.1.file_errors += b.1.file_errors;
+                a
+            },
+        );
 
     Ok((all, stats))
 }
 
-pub fn parse_latest<P: ProgressReporter + ?Sized>(
+pub fn parse_latest<P: ProgressReporter + Sync + ?Sized>(
     latest: Vec<(String, usize)>,
     progress: &P,
 ) -> std::io::Result<(Vec<(i64, String)>, Vec<(String, usize, String)>, ErrorStats)> {
@@ -93,7 +98,7 @@ pub fn process_reader<R: Read>(
     base_day: i64,
     force_ansi: &mut bool,
 ) -> std::io::Result<(Vec<(i64, String)>, ErrorStats)> {
-    let mut result = Vec::with_capacity(100000);
+    let mut result = Vec::with_capacity(100_000);
     let mut stats = ErrorStats::default();
 
     let mut buf = vec![0u8; BUF_SIZE];
@@ -137,7 +142,9 @@ pub fn process_reader<R: Read>(
 
 pub fn process_file_gz(file_path: &str) -> std::io::Result<(Vec<(i64, String)>, ErrorStats)> {
     let file = File::open(file_path)?;
-    let decoder = GzDecoder::new(file);
+
+    let raw = BufReader::with_capacity(COMP_BUF_SIZE, file);
+    let decoder = GzDecoder::new(raw);
     let reader = BufReader::with_capacity(BUF_SIZE, decoder);
 
     let filename = match Path::new(file_path).file_name().and_then(|s| s.to_str()) {
@@ -219,7 +226,7 @@ fn process_buffer(
         let line = &data[start..i];
         start = i + 1;
 
-        if memchr_iter(b'H', line).next().is_none() {
+        if memchr(b'H', line).is_none() {
             continue;
         }
 
@@ -244,14 +251,17 @@ fn process_buffer(
 
         let unix_time = base_day * 86400 + (h * 3600 + m * 60 + s) as i64;
 
-        let text: std::borrow::Cow<str> = if *force_ansi {
-            WINDOWS_1251.decode(msg_bytes).0
+        let owned;
+        let text: &str = if *force_ansi {
+            owned = WINDOWS_1251.decode(msg_bytes).0.into_owned();
+            &owned
         } else {
             match std::str::from_utf8(msg_bytes) {
-                Ok(s) => std::borrow::Cow::Borrowed(s),
+                Ok(s) => s,
                 Err(_) => {
                     *force_ansi = true;
-                    WINDOWS_1251.decode(msg_bytes).0
+                    owned = WINDOWS_1251.decode(msg_bytes).0.into_owned();
+                    &owned
                 }
             }
         };
@@ -310,9 +320,9 @@ fn parse_hms(line: &[u8]) -> Option<(u32, u32, u32)> {
         return None;
     }
 
-    let h = (line[1] - b'0') as u32 * 10 + (line[2] - b'0') as u32;
-    let m = (line[4] - b'0') as u32 * 10 + (line[5] - b'0') as u32;
-    let s = (line[7] - b'0') as u32 * 10 + (line[8] - b'0') as u32;
+    let h = (line[1].wrapping_sub(b'0')) as u32 * 10 + (line[2].wrapping_sub(b'0')) as u32;
+    let m = (line[4].wrapping_sub(b'0')) as u32 * 10 + (line[5].wrapping_sub(b'0')) as u32;
+    let s = (line[7].wrapping_sub(b'0')) as u32 * 10 + (line[8].wrapping_sub(b'0')) as u32;
 
     if h < 24 && m < 60 && s < 60 {
         Some((h, m, s))
