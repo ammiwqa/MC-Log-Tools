@@ -175,10 +175,7 @@ fn parse(tokens: &[Token]) -> Result<Expr, String> {
                 Ok(Expr::Pattern(compile_pattern(s)))
             }
 
-            _ => Err(format!(
-                "Bad query: unexpected token at position {}",
-                i
-            )),
+            _ => Err(format!("Bad query: unexpected token at position {}", i)),
         }
     }
 
@@ -205,8 +202,7 @@ fn open_zstd(path: &str) -> Result<Box<dyn BufRead>, String> {
 
     let file = File::open(path).map_err(|e| format!("Cannot open base file: {}", e))?;
 
-    let decoder =
-        ZstdDecoder::new(file).map_err(|e| format!("Broken zstd base file: {}", e))?;
+    let decoder = ZstdDecoder::new(file).map_err(|e| format!("Broken zstd base file: {}", e))?;
 
     Ok(Box::new(BufReader::new(decoder)))
 }
@@ -257,11 +253,17 @@ pub type SearchResult = Vec<(u64, String)>;
 pub fn search_async(
     name: &str,
     query: &str,
-) -> Result<(Arc<ParseProgress>, thread::JoinHandle<Result<SearchResult, String>>), String> {
+) -> Result<
+    (
+        Arc<ParseProgress>,
+        thread::JoinHandle<Result<SearchResult, String>>,
+    ),
+    String,
+> {
     compile_query(query)?;
 
     let config = read_base_info::load_log(&name)?;
-    let path = read_base_info::get_zst_path(&name)?;
+    let chunks = read_base_info::chunk_files(name, &config)?;
 
     let query = query.to_string();
     let progress = Arc::new(ParseProgress::new());
@@ -276,8 +278,6 @@ pub fn search_async(
         let progress = progress.clone();
 
         thread::spawn(move || -> Result<SearchResult, String> {
-            let reader = open_zstd(&path)?;
-
             let tokens = tokenize(&query);
             let expr = Arc::new(parse(&tokens)?);
 
@@ -295,23 +295,31 @@ pub fn search_async(
                 })
                 .collect();
 
-            let mut batch = Vec::with_capacity(MAX_CAPACITY);
+            for (path, _first_ts, _last_ts) in &chunks {
+                let reader = open_zstd(path)?;
 
-            for line in reader.lines() {
-                if let Ok(line) = line {
+                let mut batch = Vec::with_capacity(MAX_CAPACITY);
+
+                for line in reader.lines() {
+                    let Ok(line) = line else {
+                        continue;
+                    };
+
                     batch.push(line);
 
                     if batch.len() >= MAX_CAPACITY {
                         if tx.send(batch).is_err() {
-                            return Err("Search workers terminated unexpectedly".to_string());
+                            return Err(" workers terminated unexpectedly".to_string());
                         }
                         batch = Vec::with_capacity(MAX_CAPACITY);
                     }
                 }
-            }
 
-            if !batch.is_empty() {
-                let _ = tx.send(batch);
+                if !batch.is_empty() {
+                    if tx.send(batch).is_err() {
+                        return Err(" workers terminated unexpectedly".to_string());
+                    }
+                }
             }
 
             drop(tx);

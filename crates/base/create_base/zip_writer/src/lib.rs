@@ -1,5 +1,6 @@
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use zstd::stream::read::Decoder;
 use zstd::stream::write::Encoder;
 
 use progress::ProgressReporter;
@@ -50,6 +51,40 @@ pub fn write_logs_to_zstd<P: ProgressReporter + ?Sized>(
     }
 
     Ok(())
+}
+
+pub fn read_logs_from_zstd(path: &str) -> std::io::Result<Vec<(i64, String)>> {
+    let file = File::open(path)?;
+
+    let mut magic = [0u8; 4];
+    let mut probe = File::open(path)?;
+    let _ = probe.read(&mut magic)?;
+
+    if magic != [0x28, 0xB5, 0x2F, 0xFD] {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Not a zstd file: {}", path),
+        ));
+    }
+
+    let decoder = Decoder::new(file)?;
+    let reader = BufReader::new(decoder);
+
+    let mut logs = Vec::new();
+
+    for line in reader.lines() {
+        let line = line?;
+
+        if line.len() < 13 {
+            continue;
+        }
+
+        if let Ok(ts) = line[..12].parse::<i64>() {
+            logs.push((ts, line[13..].to_owned()));
+        }
+    }
+
+    Ok(logs)
 }
 
 #[inline(always)]

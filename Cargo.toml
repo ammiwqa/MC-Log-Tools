@@ -14,6 +14,7 @@ members = [
     "crates/base/search_base/search",
     "crates/base/read_base_info",
     "crates/base/update_base",
-    "crates/base/hash_utils"
+    "crates/base/hash_utils",
+    "crates/base/base_chunks"
 ]
 resolver = "2"

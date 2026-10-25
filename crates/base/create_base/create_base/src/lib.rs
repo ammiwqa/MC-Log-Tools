@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+﻿use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -396,10 +396,17 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
     let lines = logs.len();
     let now = system_time_secs();
 
+    progress.set_message("Writing chunks");
+    progress.set_total(lines as u64);
+
+    let chunks = base_chunks::write_chunks(&name, &logs, progress)?;
+
+    progress.finish();
+
     let cfg = read_base_info::BaseConfig {
         name: name.clone(),
         lines: lines as u64,
-        hash: String::new(),
+        hash: base_chunks::base_hash(&chunks),
         tags: Vec::new(),
         custom: "custom".to_string(),
         time: TimeInfo {
@@ -415,20 +422,10 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
                 .unwrap_or_default(),
         },
         paths: read_base_info::normalize_paths(entries_by_path.into_values().collect()),
+        chunks,
     };
 
-    progress.set_message("Writing logs");
-    progress.set_total(lines as u64);
-
     save_log(&name, &cfg)?;
-
-    let zst_path = read_base_info::get_zst_path(&name)?;
-
-    // let write_start = Instant::now();
-
-    zip_writer::write_logs_to_zstd_with_progress(&logs, &zst_path, progress)?;
-
-    progress.finish();
 
     debug_stage(&format!(
         "SUCCESS: total elapsed={:?}, gzip files={}, gzip lines={}, \

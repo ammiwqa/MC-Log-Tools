@@ -17,4 +17,5 @@ log_parser = { path = "../create_base/log_parser" }
 progress = { path = "../progress" }
 read_base_info = { path = "../read_base_info" }
 zip_writer = { path = "../create_base/zip_writer" }
+base_chunks = { path = "../base_chunks" }
 tools = { path = "../../tools" }

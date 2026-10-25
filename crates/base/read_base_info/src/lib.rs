@@ -95,6 +95,24 @@ fn flatten_latest(v: &Value, source_path: &str) -> LatestInfo {
     }
 }
 
+/// Metadata for a single chunk of the base.
+///
+/// A base is stored as a sequence of zstd chunks, ordered by timestamp.
+/// Chunks never overlap: `last_ts` of chunk N <= `first_ts` of chunk N+1.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChunkInfo {
+    /// File name of the chunk inside the base directory (e.g. "mybase.0.zst").
+    pub file: String,
+    /// Number of log lines stored in the chunk.
+    pub lines: u64,
+    /// Timestamp of the first line in the chunk.
+    #[serde(default)]
+    pub first_ts: i64,
+    /// Timestamp of the last line in the chunk.
+    #[serde(default)]
+    pub last_ts: i64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BaseConfig {
     #[serde(default)]
@@ -111,6 +129,9 @@ pub struct BaseConfig {
     pub time: TimeInfo,
     #[serde(default, deserialize_with = "de_path_entry_vec")]
     pub paths: Vec<PathEntry>,
+    /// Chunked storage layout. Empty for legacy bases that use a single `<name>.zst`.
+    #[serde(default)]
+    pub chunks: Vec<ChunkInfo>,
 }
 
 fn default_custom() -> String {
@@ -219,6 +240,37 @@ pub fn save_log(name: &str, config: &BaseConfig) -> Result<(), String> {
 pub fn get_zst_path(name: &str) -> Result<String, String> {
     let path = bases_dir()?.join(name).join(format!("{}.zst", name));
     Ok(path.to_string_lossy().to_string())
+}
+
+pub fn base_dir(name: &str) -> Result<PathBuf, String> {
+    Ok(bases_dir()?.join(name))
+}
+
+pub fn chunk_file_name(name: &str, index: usize) -> String {
+    format!("{}.{}.zst", name, index)
+}
+
+pub fn get_chunk_path(name: &str, index: usize) -> Result<String, String> {
+    let path = base_dir(name)?.join(chunk_file_name(name, index));
+    Ok(path.to_string_lossy().to_string())
+}
+
+pub const CHUNK_LINES: u64 = 500_000;
+
+pub fn chunk_files(name: &str, cfg: &BaseConfig) -> Result<Vec<(String, i64, i64)>, String> {
+    let dir = base_dir(name)?;
+
+    Ok(cfg
+        .chunks
+        .iter()
+        .map(|c| {
+            (
+                dir.join(&c.file).to_string_lossy().to_string(),
+                c.first_ts,
+                c.last_ts,
+            )
+        })
+        .collect())
 }
 
 pub fn delete_base(name: &str) -> Result<(), String> {

@@ -2,13 +2,11 @@ use hash_utils::{compute_file_hash, compute_gzip_payload_hash};
 use log_parser::{parse_latest, parse_logs, ErrorStats};
 use progress::ProgressReporter;
 use rayon::prelude::*;
-use read_base_info::{get_zst_path, load_log, save_log, LatestInfo};
+use read_base_info::{load_log, save_log, LatestInfo};
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
-use std::io::{self, BufRead, BufReader};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use zip_writer::write_logs_to_zstd_with_progress;
 
 fn get_dir(path: &str) -> String {
     PathBuf::from(path)
@@ -275,28 +273,24 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
         }
     }
 
-    let zst_path = get_zst_path(name)?;
+    let mut new_lines = new_logs;
+    new_lines.extend(logs_latest);
 
-    progress.set_message("Reading existing logs");
-    progress.set_total(cfg.lines);
+    let new_lines_count = new_lines.len();
 
-    let existing_logs = read_existing_logs_with_progress(&zst_path, progress)?;
+    progress.set_message("Merging into chunks");
+    progress.set_total(new_lines_count as u64);
+
+    let chunks = base_chunks::merge_into_chunks(name, &cfg.chunks, &new_lines, progress)?;
 
     progress.finish();
 
-    let existing_count = existing_logs.len();
-
-    let mut all_logs = existing_logs;
-    all_logs.extend(new_logs);
-    all_logs.extend(logs_latest);
-
-    all_logs.sort_unstable_by_key(|log| log.0);
-
-    let total_lines = all_logs.len();
-    let new_lines_count = total_lines.saturating_sub(existing_count);
+    let total_lines: usize = chunks.iter().map(|c| c.lines as usize).sum();
 
     let now = system_time_secs().to_string();
 
+    cfg.chunks = chunks;
+    cfg.hash = base_chunks::base_hash(&cfg.chunks);
     cfg.lines = total_lines as u64;
     cfg.time.edit_unix = now.clone();
 
@@ -304,16 +298,16 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
         cfg.time.creation_unix = now;
     }
 
-    if let Some((ts, _)) = all_logs.first() {
-        let ts = ts.to_string();
+    if let Some(first) = cfg.chunks.first() {
+        let ts = first.first_ts.to_string();
 
         if ts.len() == 12 {
             cfg.time.fld_unix = ts;
         }
     }
 
-    if let Some((ts, _)) = all_logs.last() {
-        let ts = ts.to_string();
+    if let Some(last) = cfg.chunks.last() {
+        let ts = last.last_ts.to_string();
 
         if ts.len() == 12 {
             cfg.time.lld_unix = ts;
@@ -321,13 +315,6 @@ pub fn update_base<P: ProgressReporter + ?Sized>(
     }
 
     save_log(name, &cfg)?;
-
-    progress.set_message("Writing logs");
-    progress.set_total(total_lines as u64);
-
-    write_logs_to_zstd_with_progress(&all_logs, &zst_path, progress)?;
-
-    progress.finish();
 
     Ok(UpdateResult {
         new_gz_files: new_gz_count,
@@ -349,34 +336,3 @@ fn system_time_secs() -> u64 {
         .as_secs()
 }
 
-fn read_existing_logs_with_progress<P: ProgressReporter + ?Sized>(
-    zst_path: &str,
-    progress: &P,
-) -> io::Result<Vec<(i64, String)>> {
-    use zstd::stream::read::Decoder;
-
-    let file = File::open(zst_path)?;
-    let decoder = Decoder::new(file)?;
-    let reader = BufReader::new(decoder);
-
-    let mut logs = Vec::new();
-
-    for line in reader.lines() {
-        let line = line?;
-
-        if line.len() < 13 {
-            progress.inc(1);
-            continue;
-        }
-
-        let ts_str = &line[..12];
-
-        if let Ok(ts) = ts_str.parse::<i64>() {
-            logs.push((ts, line[13..].to_owned()));
-        }
-
-        progress.inc(1);
-    }
-
-    Ok(logs)
-}

@@ -23,6 +23,12 @@ fn open_file_read(path: &Path) -> io::Result<File> {
     File::open(path)
 }
 
+pub fn sha256_of(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    encode(hasher.finalize())
+}
+
 pub fn compute_file_hash(path: &Path) -> io::Result<String> {
     let file = open_file_read(path)?;
     let mut reader = io::BufReader::with_capacity(HASH_BUFFER_SIZE, file);

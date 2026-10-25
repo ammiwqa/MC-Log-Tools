@@ -1,0 +1,13 @@
+[package]
+name = "base_chunks"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+zstd = { version = "0.13", features = ["zstdmt"] }
+num_cpus = "1"
+
+read_base_info = { path = "../read_base_info" }
+progress = { path = "../progress" }
+zip_writer = { path = "../create_base/zip_writer" }
+hash_utils = { path = "../hash_utils" }
