@@ -991,31 +991,47 @@ impl LogtoolsApp {
                                 let (unix, line) = &results[i];
                                 let date = format_unix_time_gui(*unix);
 
-                                ui.allocate_ui_with_layout(
+                                let (row_rect, _) = ui.allocate_exact_size(
                                     egui::vec2(ui.available_width(), row_height),
-                                    egui::Layout::left_to_right(egui::Align::Center),
-                                    |ui| {
-                                        ui.allocate_ui_with_layout(
-                                            egui::vec2(date_col_width, row_height),
-                                            egui::Layout::left_to_right(egui::Align::Center),
-                                            |ui| {
-                                                ui.label(
-                                                    egui::RichText::new(date)
-                                                        .monospace()
-                                                        .color(theme::GREEN),
-                                                );
-                                            },
-                                        );
-                                        ui.add(
-                                            egui::Label::new(
-                                                egui::RichText::new(line.as_str())
-                                                    .monospace()
-                                                    .color(log_line_color(line)),
-                                            )
-                                            .wrap_mode(egui::TextWrapMode::Extend),
-                                        );
-                                    },
+                                    egui::Sense::hover(),
                                 );
+
+                                let bg = if i % 2 == 0 {
+                                    theme::SURFACE
+                                } else {
+                                    egui::Color32::from_rgb(0x11, 0x11, 0x14)
+                                };
+                                ui.painter().rect_filled(row_rect, 0.0, bg);
+
+                                ui.allocate_ui_at_rect(row_rect, |ui| {
+                                    ui.with_layout(
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            ui.add_space(8.0);
+
+                                            ui.allocate_ui_with_layout(
+                                                egui::vec2(date_col_width, row_height),
+                                                egui::Layout::left_to_right(egui::Align::Center),
+                                                |ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(date)
+                                                            .monospace()
+                                                            .color(theme::GREEN),
+                                                    );
+                                                },
+                                            );
+
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(line.as_str())
+                                                        .monospace()
+                                                        .color(log_line_color(line)),
+                                                )
+                                                .wrap_mode(egui::TextWrapMode::Extend),
+                                            );
+                                        },
+                                    );
+                                });
                             }
                         });
 
