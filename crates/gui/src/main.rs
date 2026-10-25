@@ -886,96 +886,114 @@ impl LogtoolsApp {
             return;
         }
 
-        let mut close_requested = false;
+        let close_requested = std::cell::Cell::new(false);
+        let open_results_file_requested = std::cell::Cell::new(false);
 
-        egui::Window::new("Search Results")
-            .open(&mut open)
-            .default_size([900.0, 500.0])
-            .min_size([600.0, 300.0])
-            .show(ctx, |ui| {
-                ui.heading("Search Results");
-                ui.add_space(4.0);
+        // Копируем данные, чтобы использовать их внутри замыкания отдельного окна
+        let search_base = self.search_base.clone();
+        let search_text = self.search_text.clone();
+        let search_results = self.search_results.clone();
+        let results_path = self.results_path.clone();
 
-                if !self.search_base.is_empty() || !self.search_text.is_empty() {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Base: {}   |   Query: {}",
-                            self.search_base, self.search_text
-                        ))
-                        .small()
-                        .color(theme::TEXT_MUTED),
-                    );
+        let viewport_id = egui::ViewportId::from_hash_of("search_results_window");
+
+        let _ = ctx.show_viewport_immediate(
+            viewport_id,
+            egui::ViewportBuilder::default()
+                .with_title("Search Results")
+                .with_inner_size([900.0, 500.0])
+                .with_min_inner_size([600.0, 300.0]),
+            |ctx, _class| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.heading("Search Results");
                     ui.add_space(4.0);
-                }
 
-                ui.label(
-                    egui::RichText::new(format!("{} result(s)", self.search_results.len()))
-                        .monospace()
-                        .strong(),
-                );
-                ui.add_space(8.0);
-
-                egui::ScrollArea::vertical()
-                    .id_salt("search_results_window")
-                    .auto_shrink(false)
-                    .show(ui, |ui| {
-                        egui::Grid::new("search_results_grid")
-                            .striped(true)
-                            .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new("DATE / TIME")
-                                        .monospace()
-                                        .small()
-                                        .color(theme::TEXT_FAINT),
-                                );
-                                ui.label(
-                                    egui::RichText::new("MESSAGE")
-                                        .monospace()
-                                        .small()
-                                        .color(theme::TEXT_FAINT),
-                                );
-                                ui.end_row();
-
-                                for (unix, line) in &self.search_results {
-                                    let date = format_unix_time_gui(*unix);
-                                    ui.label(
-                                        egui::RichText::new(date)
-                                            .monospace()
-                                            .color(theme::TEXT_MUTED),
-                                    );
-                                    ui.label(
-                                        egui::RichText::new(line.as_str())
-                                            .monospace()
-                                            .color(log_line_color(line)),
-                                    );
-                                    ui.end_row();
-                                }
-                            });
-                    });
-
-                ui.add_space(8.0);
-                ui.separator();
-
-                ui.horizontal(|ui| {
-                    if let Some(path) = &self.results_path {
-                        ui.label(muted("Results file:").monospace());
-                        ui.label(egui::RichText::new(path.as_str()).monospace());
+                    if !search_base.is_empty() || !search_text.is_empty() {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Base: {}   |   Query: {}",
+                                search_base, search_text
+                            ))
+                            .small()
+                            .color(theme::TEXT_MUTED),
+                        );
+                        ui.add_space(4.0);
                     }
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(ghost_button("Close")).clicked() {
-                            close_requested = true;
+                    ui.label(
+                        egui::RichText::new(format!("{} result(s)", search_results.len()))
+                            .monospace()
+                            .strong(),
+                    );
+                    ui.add_space(8.0);
+
+                    egui::ScrollArea::vertical()
+                        .id_salt("search_results_window")
+                        .auto_shrink(false)
+                        .show(ui, |ui| {
+                            egui::Grid::new("search_results_grid")
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new("DATE / TIME")
+                                            .monospace()
+                                            .small()
+                                            .color(theme::TEXT_FAINT),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new("MESSAGE")
+                                            .monospace()
+                                            .small()
+                                            .color(theme::TEXT_FAINT),
+                                    );
+                                    ui.end_row();
+
+                                    for (unix, line) in &search_results {
+                                        let date = format_unix_time_gui(*unix);
+                                        ui.label(
+                                            egui::RichText::new(date)
+                                                .monospace()
+                                                .color(theme::GREEN),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(line.as_str())
+                                                .monospace()
+                                                .color(log_line_color(line)),
+                                        );
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+
+                    ui.add_space(8.0);
+                    ui.separator();
+
+                    ui.horizontal(|ui| {
+                        if let Some(path) = &results_path {
+                            ui.label(muted("Results file:").monospace());
+                            ui.label(egui::RichText::new(path.as_str()).monospace());
                         }
 
-                        if ui.add(primary_button("Open results file")).clicked() {
-                            self.open_results_file();
-                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add(ghost_button("Close")).clicked() {
+                                close_requested.set(true);
+                            }
+
+                            if ui.add(primary_button("Open results file")).clicked() {
+                                open_results_file_requested.set(true);
+                            }
+                        });
                     });
                 });
-            });
+            },
+        );
 
-        if close_requested {
+        if close_requested.get() {
             open = false;
+        }
+
+        if open_results_file_requested.get() {
+            self.open_results_file();
         }
 
         self.show_search_results = open;
