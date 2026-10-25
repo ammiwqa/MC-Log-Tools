@@ -397,9 +397,8 @@ struct SearchResultsWindowState {
     open: bool,
     search_base: String,
     search_text: String,
-    search_results: Vec<(u64, String)>,
+    search_results: Arc<Vec<(u64, String)>>,
     results_path: Option<String>,
-    close_requested: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -596,9 +595,8 @@ impl LogtoolsApp {
                             open: true,
                             search_base: self.search_base.clone(),
                             search_text: self.search_text.clone(),
-                            search_results: self.search_results.clone(),
+                            search_results: Arc::new(self.search_results.clone()),
                             results_path: self.results_path.clone(),
-                            close_requested: false,
                         })));
                 }
                 CmdKind::Discover => self.load_search_preview(),
@@ -645,7 +643,7 @@ impl LogtoolsApp {
 
         if let Some(state) = &self.search_results_window {
             let mut s = state.lock().unwrap();
-            s.search_results = self.search_results.clone();
+            s.search_results = Arc::new(self.search_results.clone());
             s.search_base = self.search_base.clone();
             s.search_text = self.search_text.clone();
             s.results_path = self.results_path.clone();
@@ -896,16 +894,14 @@ impl LogtoolsApp {
                         if let Some(state) = &self.search_results_window {
                             let mut s = state.lock().unwrap();
                             s.open = true;
-                            s.close_requested = false;
                         } else {
                             self.search_results_window =
                                 Some(Arc::new(Mutex::new(SearchResultsWindowState {
                                     open: true,
                                     search_base: self.search_base.clone(),
                                     search_text: self.search_text.clone(),
-                                    search_results: self.search_results.clone(),
+                                    search_results: Arc::new(self.search_results.clone()),
                                     results_path: self.results_path.clone(),
-                                    close_requested: false,
                                 })));
                         }
                     }
@@ -928,9 +924,10 @@ impl LogtoolsApp {
             return;
         };
 
-        let state_clone = state.clone();
+        let state_arc = state.clone();
+
         let open = {
-            let s = state_clone.lock().unwrap();
+            let s = state_arc.lock().unwrap();
             s.open
         };
 
@@ -945,73 +942,81 @@ impl LogtoolsApp {
                 .with_inner_size([900.0, 500.0])
                 .with_min_inner_size([600.0, 300.0]),
             move |ctx, _class| {
-                let mut state = state_clone.lock().unwrap();
-
                 if ctx.input(|i| i.viewport().close_requested()) {
-                    state.open = false;
-                    state.close_requested = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    state_arc.lock().unwrap().open = false;
+                    return;
                 }
+
+                let (base, text, results, results_path) = {
+                    let s = state_arc.lock().unwrap();
+                    (
+                        s.search_base.clone(),
+                        s.search_text.clone(),
+                        s.search_results.clone(),
+                        s.results_path.clone(),
+                    )
+                };
 
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.heading("Search Results");
                     ui.add_space(4.0);
 
-                    if !state.search_base.is_empty() || !state.search_text.is_empty() {
+                    if !base.is_empty() || !text.is_empty() {
                         ui.label(
-                            egui::RichText::new(format!(
-                                "Base: {}   |   Query: {}",
-                                state.search_base, state.search_text
-                            ))
-                            .small()
-                            .color(theme::TEXT_MUTED),
+                            egui::RichText::new(format!("Base: {}   |   Query: {}", base, text))
+                                .small()
+                                .color(theme::TEXT_MUTED),
                         );
                         ui.add_space(4.0);
                     }
 
+                    let total = results.len();
                     ui.label(
-                        egui::RichText::new(format!("{} result(s)", state.search_results.len()))
+                        egui::RichText::new(format!("{} result(s)", total))
                             .monospace()
                             .strong(),
                     );
                     ui.add_space(8.0);
 
+                    let row_height = ui.text_style_height(&egui::TextStyle::Monospace)
+                        + ui.spacing().item_spacing.y;
+
+                    let date_col_width = 180.0;
+
                     egui::ScrollArea::vertical()
                         .id_salt("search_results_window")
                         .auto_shrink(false)
-                        .show(ui, |ui| {
-                            egui::Grid::new("search_results_grid")
-                                .striped(true)
-                                .show(ui, |ui| {
-                                    ui.label(
-                                        egui::RichText::new("DATE / TIME")
-                                            .monospace()
-                                            .small()
-                                            .color(theme::TEXT_FAINT),
-                                    );
-                                    ui.label(
-                                        egui::RichText::new("MESSAGE")
-                                            .monospace()
-                                            .small()
-                                            .color(theme::TEXT_FAINT),
-                                    );
-                                    ui.end_row();
+                        .show_rows(ui, row_height, total, |ui, range| {
+                            for i in range {
+                                let (unix, line) = &results[i];
+                                let date = format_unix_time_gui(*unix);
 
-                                    for (unix, line) in &state.search_results {
-                                        let date = format_unix_time_gui(*unix);
-                                        ui.label(
-                                            egui::RichText::new(date)
-                                                .monospace()
-                                                .color(theme::GREEN),
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(ui.available_width(), row_height),
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(date_col_width, row_height),
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                ui.label(
+                                                    egui::RichText::new(date)
+                                                        .monospace()
+                                                        .color(theme::GREEN),
+                                                );
+                                            },
                                         );
-                                        ui.label(
-                                            egui::RichText::new(line.as_str())
-                                                .monospace()
-                                                .color(log_line_color(line)),
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(line.as_str())
+                                                    .monospace()
+                                                    .color(log_line_color(line)),
+                                            )
+                                            .wrap_mode(egui::TextWrapMode::Extend),
                                         );
-                                        ui.end_row();
-                                    }
-                                });
+                                    },
+                                );
+                            }
                         });
 
                     ui.add_space(8.0);
@@ -1020,15 +1025,14 @@ impl LogtoolsApp {
                     let mut open_results_file_requested = false;
 
                     ui.horizontal(|ui| {
-                        if let Some(path) = &state.results_path {
+                        if let Some(path) = &results_path {
                             ui.label(muted("Results file:").monospace());
                             ui.label(egui::RichText::new(path.as_str()).monospace());
                         }
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.add(ghost_button("Close")).clicked() {
-                                state.open = false;
-                                state.close_requested = true;
+                                state_arc.lock().unwrap().open = false;
                             }
 
                             if ui.add(primary_button("Open results file")).clicked() {
@@ -1038,14 +1042,11 @@ impl LogtoolsApp {
                     });
 
                     if open_results_file_requested {
-                        if let Some(path) = &state.results_path {
+                        if let Some(path) = &results_path {
                             let path_buf = PathBuf::from(path);
-                            drop(state);
                             open_in_system_app(&path_buf);
                         }
                     }
-
-                    ctx.request_repaint();
                 });
             },
         );
