@@ -324,6 +324,10 @@ impl Presenter for EguiPresenter {
     fn open_file(&mut self, path: &PathBuf) {
         open_in_system_app(path);
     }
+
+    fn search_completed(&mut self, _path: &PathBuf) {
+        // Do not auto-open in GUI; results are shown in a dedicated window instead.
+    }
 }
 
 fn open_in_system_app(path: &Path) {
@@ -444,6 +448,8 @@ struct LogtoolsApp {
 
     results_path: Option<String>,
     search_preview: Vec<String>,
+    search_results: Vec<(u64, String)>,
+    show_search_results: bool,
 
     create_modal_open: bool,
     create_name: String,
@@ -524,6 +530,7 @@ impl LogtoolsApp {
         self.message = None;
         self.log_lines.clear();
         self.search_preview.clear();
+        self.search_results.clear();
         self.results_path = None;
         self.last_error = None;
     }
@@ -568,7 +575,12 @@ impl LogtoolsApp {
 
             match kind {
                 CmdKind::CreateBase | CmdKind::UpdateBase | CmdKind::Delete => self.reload_bases(),
-                CmdKind::Search | CmdKind::Discover => self.load_search_preview(),
+                CmdKind::Search => {
+                    self.load_search_preview();
+                    self.load_search_results();
+                    self.show_search_results = true;
+                }
+                CmdKind::Discover => self.load_search_preview(),
                 CmdKind::ConfigParams => {
                     self.cfg_everything_dll =
                         tools::config::get_config_param("everything_dll").unwrap_or_default();
@@ -593,6 +605,20 @@ impl LogtoolsApp {
         if let Some(path) = &self.results_path {
             if let Ok(content) = std::fs::read_to_string(path) {
                 self.search_preview = content.lines().take(100).map(String::from).collect();
+            }
+        }
+    }
+
+    fn load_search_results(&mut self) {
+        self.search_results.clear();
+
+        if let Some(path) = &self.results_path {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                for line in content.lines() {
+                    if let Some((unix, text)) = parse_search_result_line(line) {
+                        self.search_results.push((unix, text));
+                    }
+                }
             }
         }
     }
@@ -819,9 +845,9 @@ impl LogtoolsApp {
             }
         });
 
-        let preview = self.search_preview.clone();
+        let has_results = !self.search_results.is_empty();
 
-        if !preview.is_empty() {
+        if has_results {
             ui.add_space(8.0);
             ui.separator();
 
@@ -835,25 +861,124 @@ impl LogtoolsApp {
                 ui.heading("Results");
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(muted("first 100 lines").small());
+                    ui.label(muted(&format!("{} found", self.search_results.len())).small());
 
-                    if ui.add(ghost_button("Open results file")).clicked() {
-                        self.open_results_file();
+                    if ui.add(ghost_button("Open results window")).clicked() {
+                        self.show_search_results = true;
+                    }
+
+                    if let Some(path) = &self.results_path {
+                        ui.label(muted("file:").small());
+                        ui.label(egui::RichText::new(path.as_str()).monospace().small());
+
+                        if ui.add(ghost_button("Open results file")).clicked() {
+                            self.open_results_file();
+                        }
                     }
                 });
             });
-
-            egui::ScrollArea::vertical()
-                .id_salt("search_preview")
-                .auto_shrink(false)
-                .show(ui, |ui| {
-                    for line in preview {
-                        ui.monospace(
-                            egui::RichText::new(line.as_str()).color(log_line_color(&line)),
-                        );
-                    }
-                });
         }
+    }
+
+    fn ui_search_results_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_search_results;
+        if !open {
+            return;
+        }
+
+        let mut close_requested = false;
+
+        egui::Window::new("Search Results")
+            .open(&mut open)
+            .default_size([900.0, 500.0])
+            .min_size([600.0, 300.0])
+            .show(ctx, |ui| {
+                ui.heading("Search Results");
+                ui.add_space(4.0);
+
+                if !self.search_base.is_empty() || !self.search_text.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Base: {}   |   Query: {}",
+                            self.search_base, self.search_text
+                        ))
+                        .small()
+                        .color(theme::TEXT_MUTED),
+                    );
+                    ui.add_space(4.0);
+                }
+
+                ui.label(
+                    egui::RichText::new(format!("{} result(s)", self.search_results.len()))
+                        .monospace()
+                        .strong(),
+                );
+                ui.add_space(8.0);
+
+                egui::ScrollArea::vertical()
+                    .id_salt("search_results_window")
+                    .auto_shrink(false)
+                    .show(ui, |ui| {
+                        egui::Grid::new("search_results_grid")
+                            .striped(true)
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new("DATE / TIME")
+                                        .monospace()
+                                        .small()
+                                        .color(theme::TEXT_FAINT),
+                                );
+                                ui.label(
+                                    egui::RichText::new("MESSAGE")
+                                        .monospace()
+                                        .small()
+                                        .color(theme::TEXT_FAINT),
+                                );
+                                ui.end_row();
+
+                                for (unix, line) in &self.search_results {
+                                    let date = format_unix_time_gui(*unix);
+                                    ui.label(
+                                        egui::RichText::new(date)
+                                            .monospace()
+                                            .color(theme::TEXT_MUTED),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(line.as_str())
+                                            .monospace()
+                                            .color(log_line_color(line)),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                    });
+
+                ui.add_space(8.0);
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    if let Some(path) = &self.results_path {
+                        ui.label(muted("Results file:").monospace());
+                        ui.label(egui::RichText::new(path.as_str()).monospace());
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(ghost_button("Close")).clicked() {
+                            close_requested = true;
+                        }
+
+                        if ui.add(primary_button("Open results file")).clicked() {
+                            self.open_results_file();
+                        }
+                    });
+                });
+            });
+
+        if close_requested {
+            open = false;
+        }
+
+        self.show_search_results = open;
     }
 
     fn ui_discover(&mut self, ui: &mut egui::Ui) {
@@ -1263,6 +1388,8 @@ impl eframe::App for LogtoolsApp {
             Screen::Discover => self.ui_discover(ui),
             Screen::Config => self.ui_config(ui),
         });
+
+        self.ui_search_results_window(ctx);
     }
 }
 
@@ -1290,6 +1417,8 @@ fn main() -> eframe::Result<()> {
         bases: Vec::new(),
         results_path: None,
         search_preview: Vec::new(),
+        search_results: Vec::new(),
+        show_search_results: false,
         create_modal_open: false,
         create_name: String::new(),
         create_paths: String::new(),
@@ -1330,4 +1459,19 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(app))
         }),
     )
+}
+
+fn parse_search_result_line(line: &str) -> Option<(u64, String)> {
+    if line.len() <= 13 {
+        return None;
+    }
+    let unix = line[0..12].parse::<u64>().ok()?;
+    let text = line[13..].to_string();
+    Some((unix, text))
+}
+
+fn format_unix_time_gui(unix: u64) -> String {
+    use chrono::{DateTime, Local, TimeZone};
+    let dt: DateTime<Local> = Local.timestamp_opt(unix as i64, 0).single().unwrap_or_default();
+    dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }

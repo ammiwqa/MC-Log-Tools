@@ -27,6 +27,12 @@ pub trait Presenter {
     fn confirm(&mut self, prompt: &str) -> bool;
 
     fn open_file(&mut self, path: &PathBuf);
+
+    fn search_completed(&mut self, path: &PathBuf) {
+        // Default behaviour: open the results file in the system app.
+        // GUI overrides this to not auto-open (results are shown in a dedicated window instead).
+        self.open_file(path);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,7 +106,7 @@ fn format_unix_time(ts: &str) -> String {
         Ok(unix_ts) => {
             use chrono::{DateTime, Local, TimeZone};
             let dt: DateTime<Local> = Local.timestamp_opt(unix_ts, 0).single().unwrap_or_default();
-            dt.format("%Y-%m-%d %H:%M").to_string()
+            dt.format("%Y-%m-%d %H:%M:%S").to_string()
         }
         Err(_) => "—".to_string(),
     }
@@ -359,7 +365,7 @@ pub fn run_search(base_name: String, text: String, presenter: &mut dyn Presenter
     ));
 
     let path = PathBuf::from(&exit_file_path);
-    presenter.open_file(&path);
+    presenter.search_completed(&path);
 
     CommandResult::Ok
 }

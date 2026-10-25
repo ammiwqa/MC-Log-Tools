@@ -342,7 +342,7 @@ fn format_unix_time(ts: &str) -> String {
         Ok(unix_ts) => {
             use chrono::{DateTime, Local, TimeZone};
             let dt: DateTime<Local> = Local.timestamp_opt(unix_ts, 0).single().unwrap_or_default();
-            dt.format("%Y-%m-%d %H:%M").to_string()
+            dt.format("%Y-%m-%d %H:%M:%S").to_string()
         }
         Err(_) => "—".to_string(),
     }
