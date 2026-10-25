@@ -889,7 +889,6 @@ impl LogtoolsApp {
         let close_requested = std::cell::Cell::new(false);
         let open_results_file_requested = std::cell::Cell::new(false);
 
-        // Копируем данные, чтобы использовать их внутри замыкания отдельного окна
         let search_base = self.search_base.clone();
         let search_text = self.search_text.clone();
         let search_results = self.search_results.clone();
@@ -1490,6 +1489,9 @@ fn parse_search_result_line(line: &str) -> Option<(u64, String)> {
 
 fn format_unix_time_gui(unix: u64) -> String {
     use chrono::{DateTime, Local, TimeZone};
-    let dt: DateTime<Local> = Local.timestamp_opt(unix as i64, 0).single().unwrap_or_default();
+    let dt: DateTime<Local> = Local
+        .timestamp_opt(unix as i64, 0)
+        .single()
+        .unwrap_or_default();
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
