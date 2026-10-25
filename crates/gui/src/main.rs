@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use eframe::egui;
@@ -391,6 +392,16 @@ struct Done {
     result: CommandResult,
 }
 
+#[derive(Clone)]
+struct SearchResultsWindowState {
+    open: bool,
+    search_base: String,
+    search_text: String,
+    search_results: Vec<(u64, String)>,
+    results_path: Option<String>,
+    close_requested: bool,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
     Bases,
@@ -449,7 +460,8 @@ struct LogtoolsApp {
     results_path: Option<String>,
     search_preview: Vec<String>,
     search_results: Vec<(u64, String)>,
-    show_search_results: bool,
+
+    search_results_window: Option<Arc<Mutex<SearchResultsWindowState>>>,
 
     create_modal_open: bool,
     create_name: String,
@@ -533,6 +545,7 @@ impl LogtoolsApp {
         self.search_results.clear();
         self.results_path = None;
         self.last_error = None;
+        self.search_results_window = None;
     }
 
     fn pump_events(&mut self) {
@@ -578,7 +591,15 @@ impl LogtoolsApp {
                 CmdKind::Search => {
                     self.load_search_preview();
                     self.load_search_results();
-                    self.show_search_results = true;
+                    self.search_results_window =
+                        Some(Arc::new(Mutex::new(SearchResultsWindowState {
+                            open: true,
+                            search_base: self.search_base.clone(),
+                            search_text: self.search_text.clone(),
+                            search_results: self.search_results.clone(),
+                            results_path: self.results_path.clone(),
+                            close_requested: false,
+                        })));
                 }
                 CmdKind::Discover => self.load_search_preview(),
                 CmdKind::ConfigParams => {
@@ -620,6 +641,14 @@ impl LogtoolsApp {
                     }
                 }
             }
+        }
+
+        if let Some(state) = &self.search_results_window {
+            let mut s = state.lock().unwrap();
+            s.search_results = self.search_results.clone();
+            s.search_base = self.search_base.clone();
+            s.search_text = self.search_text.clone();
+            s.results_path = self.results_path.clone();
         }
     }
 
@@ -864,7 +893,21 @@ impl LogtoolsApp {
                     ui.label(muted(&format!("{} found", self.search_results.len())).small());
 
                     if ui.add(ghost_button("Open results window")).clicked() {
-                        self.show_search_results = true;
+                        if let Some(state) = &self.search_results_window {
+                            let mut s = state.lock().unwrap();
+                            s.open = true;
+                            s.close_requested = false;
+                        } else {
+                            self.search_results_window =
+                                Some(Arc::new(Mutex::new(SearchResultsWindowState {
+                                    open: true,
+                                    search_base: self.search_base.clone(),
+                                    search_text: self.search_text.clone(),
+                                    search_results: self.search_results.clone(),
+                                    results_path: self.results_path.clone(),
+                                    close_requested: false,
+                                })));
+                        }
                     }
 
                     if let Some(path) = &self.results_path {
@@ -881,37 +924,44 @@ impl LogtoolsApp {
     }
 
     fn ui_search_results_window(&mut self, ctx: &egui::Context) {
-        let mut open = self.show_search_results;
+        let Some(state) = &self.search_results_window else {
+            return;
+        };
+
+        let state_clone = state.clone();
+        let open = {
+            let s = state_clone.lock().unwrap();
+            s.open
+        };
+
         if !open {
             return;
         }
 
-        let close_requested = std::cell::Cell::new(false);
-        let open_results_file_requested = std::cell::Cell::new(false);
-
-        let search_base = self.search_base.clone();
-        let search_text = self.search_text.clone();
-        let search_results = self.search_results.clone();
-        let results_path = self.results_path.clone();
-
-        let viewport_id = egui::ViewportId::from_hash_of("search_results_window");
-
-        let _ = ctx.show_viewport_immediate(
-            viewport_id,
+        ctx.show_viewport_deferred(
+            egui::ViewportId::from_hash_of("search_results_window"),
             egui::ViewportBuilder::default()
                 .with_title("Search Results")
                 .with_inner_size([900.0, 500.0])
                 .with_min_inner_size([600.0, 300.0]),
-            |ctx, _class| {
+            move |ctx, _class| {
+                let mut state = state_clone.lock().unwrap();
+
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    state.open = false;
+                    state.close_requested = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                }
+
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.heading("Search Results");
                     ui.add_space(4.0);
 
-                    if !search_base.is_empty() || !search_text.is_empty() {
+                    if !state.search_base.is_empty() || !state.search_text.is_empty() {
                         ui.label(
                             egui::RichText::new(format!(
                                 "Base: {}   |   Query: {}",
-                                search_base, search_text
+                                state.search_base, state.search_text
                             ))
                             .small()
                             .color(theme::TEXT_MUTED),
@@ -920,7 +970,7 @@ impl LogtoolsApp {
                     }
 
                     ui.label(
-                        egui::RichText::new(format!("{} result(s)", search_results.len()))
+                        egui::RichText::new(format!("{} result(s)", state.search_results.len()))
                             .monospace()
                             .strong(),
                     );
@@ -947,7 +997,7 @@ impl LogtoolsApp {
                                     );
                                     ui.end_row();
 
-                                    for (unix, line) in &search_results {
+                                    for (unix, line) in &state.search_results {
                                         let date = format_unix_time_gui(*unix);
                                         ui.label(
                                             egui::RichText::new(date)
@@ -967,35 +1017,38 @@ impl LogtoolsApp {
                     ui.add_space(8.0);
                     ui.separator();
 
+                    let mut open_results_file_requested = false;
+
                     ui.horizontal(|ui| {
-                        if let Some(path) = &results_path {
+                        if let Some(path) = &state.results_path {
                             ui.label(muted("Results file:").monospace());
                             ui.label(egui::RichText::new(path.as_str()).monospace());
                         }
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.add(ghost_button("Close")).clicked() {
-                                close_requested.set(true);
+                                state.open = false;
+                                state.close_requested = true;
                             }
 
                             if ui.add(primary_button("Open results file")).clicked() {
-                                open_results_file_requested.set(true);
+                                open_results_file_requested = true;
                             }
                         });
                     });
+
+                    if open_results_file_requested {
+                        if let Some(path) = &state.results_path {
+                            let path_buf = PathBuf::from(path);
+                            drop(state);
+                            open_in_system_app(&path_buf);
+                        }
+                    }
+
+                    ctx.request_repaint();
                 });
             },
         );
-
-        if close_requested.get() {
-            open = false;
-        }
-
-        if open_results_file_requested.get() {
-            self.open_results_file();
-        }
-
-        self.show_search_results = open;
     }
 
     fn ui_discover(&mut self, ui: &mut egui::Ui) {
@@ -1435,7 +1488,7 @@ fn main() -> eframe::Result<()> {
         results_path: None,
         search_preview: Vec::new(),
         search_results: Vec::new(),
-        show_search_results: false,
+        search_results_window: None,
         create_modal_open: false,
         create_name: String::new(),
         create_paths: String::new(),
