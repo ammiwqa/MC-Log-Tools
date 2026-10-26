@@ -136,14 +136,32 @@ fn zed_progress_bar(ui: &mut egui::Ui, fraction: f32) {
 }
 
 fn log_line_color(line: &str) -> egui::Color32 {
-    let lower = line.to_lowercase();
+    //   [ERROR] message...           → red
+    //   [WARN]  message...           → amber
+    //   ERROR: message...            → red
+    //   WARN:  message...            → amber
+    //   ERROR message...             → red
+    //   WARN  message...             → amber
+    //   Severe  message...           → red   (Forge/Fabric severity)
+    //   Warning message...           → amber
+    //   Fine/Finer/Finest/Info/Debug → muted (по умолчанию)
 
-    if lower.contains("error") || lower.contains("failed") {
-        theme::RED
-    } else if lower.contains("warn") {
-        theme::AMBER
-    } else {
-        theme::TEXT_MUTED
+    let trimmed = line.trim_start();
+    let first = match trimmed.find(char::is_whitespace) {
+        Some(idx) => &trimmed[..idx],
+        None => trimmed,
+    };
+    let bare = first
+        .trim_end_matches(':')
+        .trim_end_matches(']')
+        .trim_start_matches('[');
+
+    match bare {
+        "ERROR" | "Error" | "SEVERE" | "Severe" | "FATAL" | "Fatal" | "CRITICAL" | "Critical" => {
+            theme::RED
+        }
+        "WARN" | "Warn" | "WARNING" | "Warning" => theme::AMBER,
+        _ => theme::TEXT_MUTED,
     }
 }
 
@@ -399,6 +417,7 @@ struct SearchResultsWindowState {
     search_text: String,
     search_results: Arc<Vec<(u64, String)>>,
     results_path: Option<String>,
+    nav_target_row: Option<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -597,6 +616,7 @@ impl LogtoolsApp {
                             search_text: self.search_text.clone(),
                             search_results: Arc::new(self.search_results.clone()),
                             results_path: self.results_path.clone(),
+                            nav_target_row: None,
                         })));
                 }
                 CmdKind::Discover => self.load_search_preview(),
@@ -902,6 +922,7 @@ impl LogtoolsApp {
                                     search_text: self.search_text.clone(),
                                     search_results: Arc::new(self.search_results.clone()),
                                     results_path: self.results_path.clone(),
+                                    nav_target_row: None,
                                 })));
                         }
                     }
@@ -957,86 +978,10 @@ impl LogtoolsApp {
                     )
                 };
 
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.heading("Search Results");
+                egui::TopBottomPanel::bottom("results_bottom_panel").show(ctx, |ui| {
                     ui.add_space(4.0);
-
-                    if !base.is_empty() || !text.is_empty() {
-                        ui.label(
-                            egui::RichText::new(format!("Base: {}   |   Query: {}", base, text))
-                                .small()
-                                .color(theme::TEXT_MUTED),
-                        );
-                        ui.add_space(4.0);
-                    }
-
-                    let total = results.len();
-                    ui.label(
-                        egui::RichText::new(format!("{} result(s)", total))
-                            .monospace()
-                            .strong(),
-                    );
-                    ui.add_space(8.0);
-
-                    let row_height = ui.text_style_height(&egui::TextStyle::Monospace)
-                        + ui.spacing().item_spacing.y;
-
-                    let date_col_width = 180.0;
-
-                    egui::ScrollArea::vertical()
-                        .id_salt("search_results_window")
-                        .auto_shrink(false)
-                        .show_rows(ui, row_height, total, |ui, range| {
-                            for i in range {
-                                let (unix, line) = &results[i];
-                                let date = format_unix_time_gui(*unix);
-
-                                let (row_rect, _) = ui.allocate_exact_size(
-                                    egui::vec2(ui.available_width(), row_height),
-                                    egui::Sense::hover(),
-                                );
-
-                                let bg = if i % 2 == 0 {
-                                    theme::SURFACE
-                                } else {
-                                    egui::Color32::from_rgb(0x11, 0x11, 0x14)
-                                };
-                                ui.painter().rect_filled(row_rect, 0.0, bg);
-
-                                ui.allocate_ui_at_rect(row_rect, |ui| {
-                                    ui.with_layout(
-                                        egui::Layout::left_to_right(egui::Align::Center),
-                                        |ui| {
-                                            ui.add_space(8.0);
-
-                                            ui.allocate_ui_with_layout(
-                                                egui::vec2(date_col_width, row_height),
-                                                egui::Layout::left_to_right(egui::Align::Center),
-                                                |ui| {
-                                                    ui.label(
-                                                        egui::RichText::new(date)
-                                                            .monospace()
-                                                            .color(theme::GREEN),
-                                                    );
-                                                },
-                                            );
-
-                                            ui.add(
-                                                egui::Label::new(
-                                                    egui::RichText::new(line.as_str())
-                                                        .monospace()
-                                                        .color(log_line_color(line)),
-                                                )
-                                                .wrap_mode(egui::TextWrapMode::Extend),
-                                            );
-                                        },
-                                    );
-                                });
-                            }
-                        });
-
-                    ui.add_space(8.0);
                     ui.separator();
+                    ui.add_space(4.0);
 
                     let mut open_results_file_requested = false;
 
@@ -1057,12 +1002,224 @@ impl LogtoolsApp {
                         });
                     });
 
+                    ui.add_space(4.0);
+
                     if open_results_file_requested {
                         if let Some(path) = &results_path {
                             let path_buf = PathBuf::from(path);
                             open_in_system_app(&path_buf);
                         }
                     }
+                });
+
+                let tree = build_date_tree(&results);
+
+                egui::SidePanel::right("date_tree_panel")
+                    .width_range(180.0..=220.0)
+                    .resizable(true)
+                    .show(ctx, |ui| {
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("DATES")
+                                .monospace()
+                                .small()
+                                .color(theme::TEXT_FAINT),
+                        );
+                        ui.add_space(4.0);
+                        ui.separator();
+                        ui.add_space(4.0);
+
+                        let mut new_target: Option<usize> = None;
+
+                        egui::ScrollArea::vertical()
+                            .id_salt("date_tree_scroll")
+                            .auto_shrink(false)
+                            .show(ui, |ui| {
+                                for (year, months) in &tree {
+                                    egui::CollapsingHeader::new(
+                                        egui::RichText::new(year.to_string())
+                                            .monospace()
+                                            .strong()
+                                            .color(theme::TEXT),
+                                    )
+                                    .default_open(false)
+                                    .show(ui, |ui| {
+                                        for (month, days) in months {
+                                            egui::CollapsingHeader::new(
+                                                egui::RichText::new(format!(
+                                                    "{}  ({})",
+                                                    month_name(*month),
+                                                    days.len()
+                                                ))
+                                                .monospace()
+                                                .color(theme::TEXT_MUTED),
+                                            )
+                                            .default_open(false)
+                                            .show(
+                                                ui,
+                                                |ui| {
+                                                    for (day, idx) in days {
+                                                        let resp = ui.add(
+                                                            egui::Button::new(
+                                                                egui::RichText::new(format!(
+                                                                    "{:2}",
+                                                                    day
+                                                                ))
+                                                                .monospace()
+                                                                .color(theme::TEXT_MUTED),
+                                                            )
+                                                            .fill(egui::Color32::TRANSPARENT)
+                                                            .stroke(egui::Stroke::NONE)
+                                                            .min_size(egui::vec2(
+                                                                ui.available_width(),
+                                                                20.0,
+                                                            )),
+                                                        );
+
+                                                        if resp.clicked() {
+                                                            new_target = Some(*idx);
+                                                        }
+                                                    }
+                                                },
+                                            );
+                                        }
+                                    });
+                                }
+                            });
+
+                        if let Some(idx) = new_target {
+                            let mut s = state_arc.lock().unwrap();
+                            s.nav_target_row = Some(idx);
+                        }
+                    });
+
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.heading("Search Results");
+                    ui.add_space(4.0);
+
+                    if !base.is_empty() || !text.is_empty() {
+                        ui.label(
+                            egui::RichText::new(format!("Base: {}   |   Query: {}", base, text))
+                                .small()
+                                .color(theme::TEXT_MUTED),
+                        );
+                        ui.add_space(4.0);
+                    }
+
+                    let total = results.len();
+                    ui.label(
+                        egui::RichText::new(format!("{} result(s)", total))
+                            .monospace()
+                            .strong(),
+                    );
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+
+                    let row_height = ui.text_style_height(&egui::TextStyle::Monospace) + 4.0;
+
+                    let target_row = state_arc.lock().unwrap().nav_target_row.take();
+                    if let Some(target) = target_row {
+                        let target_y = target as f32 * row_height;
+                        let scroll_state_id = ui.id().with(egui::Id::new("search_results_window"));
+                        let mut sa_state: egui::scroll_area::State = ctx
+                            .data(|d| d.get_temp(scroll_state_id))
+                            .unwrap_or_default();
+                        sa_state.offset.y = target_y;
+                        ctx.data_mut(|d| d.insert_temp(scroll_state_id, sa_state));
+                    }
+
+                    ui.spacing_mut().item_spacing.y = 0.0;
+
+                    egui::ScrollArea::vertical()
+                        .id_salt("search_results_window")
+                        .auto_shrink(false)
+                        .show_rows(ui, row_height, total, |ui, range| {
+                            let last_day_id = ui.id().with("last_shown_day");
+                            let mut last_day: Option<String> =
+                                ctx.data(|d| d.get_temp::<String>(last_day_id));
+
+                            for i in range {
+                                let (unix, line) = &results[i];
+                                let date = format_unix_time_gui(*unix);
+
+                                let cur_day = date[..10].to_string();
+                                let is_new_day = last_day.as_deref() != Some(&cur_day);
+                                last_day = Some(cur_day.clone());
+
+                                let (row_rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(ui.available_width(), row_height),
+                                    egui::Sense::hover(),
+                                );
+
+                                let bg = if i % 2 == 0 {
+                                    theme::SURFACE
+                                } else {
+                                    egui::Color32::from_rgb(0x11, 0x11, 0x14)
+                                };
+                                ui.painter().rect_filled(row_rect, 0.0, bg);
+
+                                if is_new_day {
+                                    let sep_y = row_rect.top();
+                                    ui.painter().line_segment(
+                                        [
+                                            egui::pos2(row_rect.left(), sep_y),
+                                            egui::pos2(row_rect.right(), sep_y),
+                                        ],
+                                        egui::Stroke::new(1.0_f32, theme::GREEN_DIM),
+                                    );
+
+                                    let label = cur_day.clone();
+                                    let label_galley = ui.painter().layout_no_wrap(
+                                        label,
+                                        egui::FontId::monospace(10.0),
+                                        theme::GREEN,
+                                    );
+                                    let label_w = label_galley.size().x + 6.0;
+                                    let label_h = label_galley.size().y;
+                                    let label_rect = egui::Rect::from_min_size(
+                                        egui::pos2(row_rect.right() - label_w - 4.0, sep_y + 2.0),
+                                        egui::vec2(label_w, label_h),
+                                    );
+                                    ui.painter().rect_filled(label_rect, 2.0, theme::PANEL);
+                                    ui.painter().galley(
+                                        label_rect.left_top() + egui::vec2(3.0, 0.0),
+                                        label_galley,
+                                        theme::GREEN,
+                                    );
+                                }
+
+                                let date_galley = ui.painter().layout_no_wrap(
+                                    date,
+                                    egui::FontId::monospace(12.5),
+                                    theme::GREEN,
+                                );
+                                let text_color = log_line_color(line);
+                                let line_galley = ui.painter().layout_no_wrap(
+                                    line.clone(),
+                                    egui::FontId::monospace(12.5),
+                                    text_color,
+                                );
+
+                                let date_x = row_rect.left() + 8.0;
+                                let line_x = date_x + 200.0;
+                                let date_y = row_rect.center().y - date_galley.size().y * 0.5;
+                                let line_y = row_rect.center().y - line_galley.size().y * 0.5;
+
+                                ui.painter().galley(
+                                    egui::pos2(date_x, date_y),
+                                    date_galley,
+                                    theme::GREEN,
+                                );
+                                ui.painter().galley(
+                                    egui::pos2(line_x, line_y),
+                                    line_galley,
+                                    text_color,
+                                );
+                            }
+
+                            ctx.data_mut(|d| d.insert_temp(last_day_id, last_day));
+                        });
                 });
             },
         );
@@ -1564,4 +1721,64 @@ fn format_unix_time_gui(unix: u64) -> String {
         .single()
         .unwrap_or_default();
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn build_date_tree(results: &[(u64, String)]) -> Vec<(i32, Vec<(u32, Vec<(u32, usize)>)>)> {
+    use chrono::{Datelike, Local, TimeZone};
+    use std::collections::BTreeMap;
+
+    let mut years: BTreeMap<i32, BTreeMap<u32, BTreeMap<u32, usize>>> = BTreeMap::new();
+
+    for (i, (unix, _)) in results.iter().enumerate() {
+        let Some(dt) = Local.timestamp_opt(*unix as i64, 0).single() else {
+            continue;
+        };
+        let (y, m, d) = (dt.year(), dt.month(), dt.day());
+
+        years
+            .entry(y)
+            .or_default()
+            .entry(m)
+            .or_default()
+            .entry(d)
+            .or_insert(i);
+    }
+
+    years
+        .into_iter()
+        .map(|(y, months)| {
+            (
+                y,
+                months
+                    .into_iter()
+                    .map(|(m, days)| {
+                        (
+                            m,
+                            days.into_iter()
+                                .map(|(d, idx)| (d, idx))
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect()
+}
+
+fn month_name(m: u32) -> &'static str {
+    match m {
+        1 => "Jan",
+        2 => "Feb",
+        3 => "Mar",
+        4 => "Apr",
+        5 => "May",
+        6 => "Jun",
+        7 => "Jul",
+        8 => "Aug",
+        9 => "Sep",
+        10 => "Oct",
+        11 => "Nov",
+        12 => "Dec",
+        _ => "???",
+    }
 }
