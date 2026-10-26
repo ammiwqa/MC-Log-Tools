@@ -1145,6 +1145,15 @@ impl LogtoolsApp {
 
                                 let cur_day = date[..10].to_string();
                                 let is_new_day = last_day.as_deref() != Some(&cur_day);
+
+                                if is_new_day && i > 0 {
+                                    let (spacer_rect, _) = ui.allocate_exact_size(
+                                        egui::vec2(ui.available_width(), 10.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    ui.painter().rect_filled(spacer_rect, 0.0, theme::PANEL);
+                                }
+
                                 last_day = Some(cur_day.clone());
 
                                 let (row_rect, _) = ui.allocate_exact_size(
@@ -1166,14 +1175,14 @@ impl LogtoolsApp {
                                             egui::pos2(row_rect.left(), sep_y),
                                             egui::pos2(row_rect.right(), sep_y),
                                         ],
-                                        egui::Stroke::new(1.0_f32, theme::GREEN_DIM),
+                                        egui::Stroke::new(1.0_f32, theme::TEXT_FAINT),
                                     );
 
                                     let label = cur_day.clone();
                                     let label_galley = ui.painter().layout_no_wrap(
                                         label,
                                         egui::FontId::monospace(10.0),
-                                        theme::GREEN,
+                                        theme::TEXT_MUTED,
                                     );
                                     let label_w = label_galley.size().x + 6.0;
                                     let label_h = label_galley.size().y;
@@ -1185,7 +1194,7 @@ impl LogtoolsApp {
                                     ui.painter().galley(
                                         label_rect.left_top() + egui::vec2(3.0, 0.0),
                                         label_galley,
-                                        theme::GREEN,
+                                        theme::TEXT_MUTED,
                                     );
                                 }
 
