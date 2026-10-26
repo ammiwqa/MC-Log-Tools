@@ -2,6 +2,7 @@
 
 //! GUI на egui/eframe.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -428,6 +429,7 @@ struct SearchResultsWindowState {
     results_path: Option<String>,
     nav_target_row: Option<usize>,
     context_lines: usize,
+    context_marks: HashSet<(u64, String)>,
 
     find_open: bool,
     find_text: String,
@@ -651,6 +653,7 @@ impl LogtoolsApp {
                             results_path: self.results_path.clone(),
                             nav_target_row: None,
                             context_lines: 5,
+                            context_marks: HashSet::new(),
                             find_open: false,
                             find_text: String::new(),
                             find_matches: Vec::new(),
@@ -1014,6 +1017,7 @@ impl LogtoolsApp {
                                     results_path: self.results_path.clone(),
                                     nav_target_row: None,
                             context_lines: 5,
+                            context_marks: HashSet::new(),
                                     find_open: false,
                                     find_text: String::new(),
                                     find_matches: Vec::new(),
@@ -1070,6 +1074,7 @@ impl LogtoolsApp {
                     text,
                     results,
                     results_path,
+                    context_marks,
                     find_open,
                     find_text,
                     find_matches,
@@ -1088,6 +1093,7 @@ impl LogtoolsApp {
                     let base = s.search_base.clone();
                     let text = s.search_text.clone();
                     let results = s.search_results.clone();
+                    let context_marks = s.context_marks.clone();
                     let results_path = s.results_path.clone();
                     let find_open = s.find_open;
                     let find_text = s.find_text.clone();
@@ -1100,6 +1106,7 @@ impl LogtoolsApp {
                         text,
                         results,
                         results_path,
+                        context_marks,
                         find_open,
                         find_text,
                         find_matches,
@@ -1416,6 +1423,8 @@ impl LogtoolsApp {
                                 );
 
                                 row_response.context_menu(|ui| {
+                                    let mut s = state_arc.lock().unwrap();
+
                                     ui.label(
                                         egui::RichText::new(format_unix_time_gui(*unix))
                                             .small()
@@ -1423,8 +1432,19 @@ impl LogtoolsApp {
                                     );
                                     ui.separator();
 
+                                    ui.label(
+                                        egui::RichText::new("Строк контекста:")
+                                            .small()
+                                            .color(theme::TEXT_MUTED),
+                                    );
+                                    ui.add(
+                                        egui::DragValue::new(&mut s.context_lines)
+                                            .range(1..=1000)
+                                            .speed(1),
+                                    );
+                                    ui.separator();
+
                                     if ui.button("Показать контекст").clicked() {
-                                        let mut s = state_arc.lock().unwrap();
                                         let n = s.context_lines;
                                         if let Ok(ctx_lines) =
                                             logtools_app::read_context_around(
@@ -1441,8 +1461,10 @@ impl LogtoolsApp {
                                             > = new_results.iter().cloned().collect();
                                             for (ts, line) in ctx_lines {
                                                 let u = ts as u64;
-                                                if existing.insert((u, line.clone())) {
+                                                let line_cloned = line.clone();
+                                                if existing.insert((u, line_cloned.clone())) {
                                                     new_results.push((u, line));
+                                                    s.context_marks.insert((u, line_cloned));
                                                 }
                                             }
                                             new_results.sort_unstable_by_key(|x| x.0);
@@ -1456,7 +1478,10 @@ impl LogtoolsApp {
                                 let row_is_match =
                                     !find_text.is_empty() && find_matches.binary_search(&i).is_ok();
 
-                                let bg = if row_is_current {
+                                let is_context = context_marks.contains(&(*unix, line.clone()));
+                                let bg = if is_context {
+                                    theme::SURFACE_ACTIVE
+                                } else if row_is_current {
                                     theme::FIND_ROW_CURRENT
                                 } else if i % 2 == 0 {
                                     theme::SURFACE
