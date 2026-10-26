@@ -47,6 +47,32 @@ pub fn start_search(base_name: &str, query: &str) -> Result<SearchHandle, String
     Ok(SearchHandle { progress, handle })
 }
 
+pub fn start_search_date_range(
+    base_name: &str,
+    query: &str,
+    date_from: Option<i64>,
+    date_to: Option<i64>,
+    use_date_filtering: bool,
+) -> Result<SearchHandle, String> {
+    let (progress, handle) = search::search_async_date_range(
+        base_name,
+        query,
+        date_from,
+        date_to,
+        use_date_filtering,
+    )?;
+    Ok(SearchHandle { progress, handle })
+}
+
+pub fn read_context_around(
+    name: &str,
+    target_ts: i64,
+    n_before: usize,
+    n_after: usize,
+) -> Result<Vec<(i64, String)>, String> {
+    search::read_context_around(name, target_ts, n_before, n_after)
+}
+
 pub fn event_channel() -> (EventSender, mpsc::Receiver<CoreEvent>) {
     mpsc::channel()
 }

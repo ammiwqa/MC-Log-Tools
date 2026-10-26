@@ -383,6 +383,9 @@ enum GuiCommand {
     Search {
         base: String,
         text: String,
+        date_from: Option<i64>,
+        date_to: Option<i64>,
+        use_date_filtering: bool,
     },
     UpdateBase {
         name: String,
@@ -424,6 +427,7 @@ struct SearchResultsWindowState {
     search_results: Arc<Vec<(u64, String)>>,
     results_path: Option<String>,
     nav_target_row: Option<usize>,
+    context_lines: usize,
 
     find_open: bool,
     find_text: String,
@@ -502,6 +506,9 @@ struct LogtoolsApp {
 
     search_base: String,
     search_text: String,
+    search_use_date_filtering: bool,
+    search_date_from: String,
+    search_date_to: String,
 
     disc_root: String,
     disc_use_everything: bool,
@@ -534,8 +541,21 @@ impl LogtoolsApp {
                     paths,
                     from_file,
                 } => logtools_app::run_create_base(paths, from_file, name, &mut presenter),
-                GuiCommand::Search { base, text } => {
-                    logtools_app::run_search(base, text, &mut presenter)
+                GuiCommand::Search {
+                    base,
+                    text,
+                    date_from,
+                    date_to,
+                    use_date_filtering,
+                } => {
+                    logtools_app::run_search_date_range(
+                        base,
+                        text,
+                        date_from,
+                        date_to,
+                        use_date_filtering,
+                        &mut presenter,
+                    )
                 }
                 GuiCommand::UpdateBase { name } => {
                     logtools_app::run_update_base(name, &mut presenter)
@@ -630,6 +650,7 @@ impl LogtoolsApp {
                             search_results: Arc::new(self.search_results.clone()),
                             results_path: self.results_path.clone(),
                             nav_target_row: None,
+                            context_lines: 5,
                             find_open: false,
                             find_text: String::new(),
                             find_matches: Vec::new(),
@@ -687,6 +708,17 @@ impl LogtoolsApp {
             s.search_text = self.search_text.clone();
             s.results_path = self.results_path.clone();
         }
+    }
+
+    fn base_date_bounds(&self) -> (Option<i64>, Option<i64>) {
+        read_base_info::load_log(&self.search_base)
+            .ok()
+            .and_then(|cfg| {
+                let f = cfg.time.fld_unix.parse::<i64>().ok();
+                let l = cfg.time.lld_unix.parse::<i64>().ok();
+                Some((f, l))
+            })
+            .unwrap_or_default()
     }
 
     fn open_results_file(&self) {
@@ -860,6 +892,7 @@ impl LogtoolsApp {
 
         ui.add_enabled_ui(!self.busy, |ui| {
             let names: Vec<String> = self.bases.iter().map(|b| b.name.clone()).collect();
+            let prev_base = self.search_base.clone();
 
             if self.search_base.is_empty() {
                 if let Some(first) = names.first() {
@@ -882,6 +915,32 @@ impl LogtoolsApp {
                     });
             });
 
+            if self.search_base != prev_base {
+                let (f, l) = self.base_date_bounds();
+                self.search_date_from = f.map(|v| format_unix_time_gui(v as u64)).unwrap_or_default();
+                self.search_date_to = l.map(|v| format_unix_time_gui(v as u64)).unwrap_or_default();
+            }
+
+            ui.add_space(6.0);
+
+            ui.checkbox(&mut self.search_use_date_filtering, "Use date filtering");
+
+            ui.add_enabled_ui(self.search_use_date_filtering, |ui| {
+                ui.label(muted("From:").small());
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.search_date_from)
+                        .desired_width(170.0)
+                        .hint_text("YYYY-MM-DD или unix"),
+                );
+                ui.label(muted("To:").small());
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.search_date_to)
+                        .desired_width(170.0)
+                        .hint_text("YYYY-MM-DD или unix"),
+                );
+                ui.label(muted("пусто = всю базу").small());
+            });
+
             ui.add_space(6.0);
 
             ui.add(
@@ -901,11 +960,23 @@ impl LogtoolsApp {
                 let _ = tools::config::save_config_param("last_search_base", &self.search_base);
                 let _ = tools::config::save_config_param("last_search_text", &self.search_text);
 
+                let (date_from, date_to) = if self.search_use_date_filtering {
+                    (
+                        parse_date_input(&self.search_date_from),
+                        parse_date_input(&self.search_date_to),
+                    )
+                } else {
+                    (None, None)
+                };
+
                 self.spawn_command(
                     CmdKind::Search,
                     GuiCommand::Search {
                         base: self.search_base.clone(),
                         text: self.search_text.clone(),
+                        date_from,
+                        date_to,
+                        use_date_filtering: self.search_use_date_filtering,
                     },
                 );
             }
@@ -942,6 +1013,7 @@ impl LogtoolsApp {
                                     search_results: Arc::new(self.search_results.clone()),
                                     results_path: self.results_path.clone(),
                                     nav_target_row: None,
+                            context_lines: 5,
                                     find_open: false,
                                     find_text: String::new(),
                                     find_matches: Vec::new(),
@@ -1063,6 +1135,18 @@ impl LogtoolsApp {
                             }
                         });
                     });
+
+                    ui.add_space(4.0);
+
+                    {
+                        let mut s = state_arc.lock().unwrap();
+                        ui.label(muted("Контекст (строк):").small());
+                        ui.add(
+                            egui::DragValue::new(&mut s.context_lines)
+                                .range(1..=1000)
+                                .speed(1),
+                        );
+                    }
 
                     ui.add_space(4.0);
 
@@ -1326,10 +1410,46 @@ impl LogtoolsApp {
 
                                 last_day = Some(cur_day.clone());
 
-                                let (row_rect, _) = ui.allocate_exact_size(
+                                let (row_rect, row_response) = ui.allocate_exact_size(
                                     egui::vec2(ui.available_width(), row_height),
-                                    egui::Sense::hover(),
+                                    egui::Sense::click(),
                                 );
+
+                                row_response.context_menu(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(format_unix_time_gui(*unix))
+                                            .small()
+                                            .color(theme::TEXT_MUTED),
+                                    );
+                                    ui.separator();
+
+                                    if ui.button("Показать контекст").clicked() {
+                                        let mut s = state_arc.lock().unwrap();
+                                        let n = s.context_lines;
+                                        if let Ok(ctx_lines) =
+                                            logtools_app::read_context_around(
+                                                &s.search_base,
+                                                *unix as i64,
+                                                n,
+                                                n,
+                                            )
+                                        {
+                                            let mut new_results: Vec<(u64, String)> =
+                                                (*s.search_results).clone();
+                                            let mut existing: std::collections::HashSet<
+                                                (u64, String),
+                                            > = new_results.iter().cloned().collect();
+                                            for (ts, line) in ctx_lines {
+                                                let u = ts as u64;
+                                                if existing.insert((u, line.clone())) {
+                                                    new_results.push((u, line));
+                                                }
+                                            }
+                                            new_results.sort_unstable_by_key(|x| x.0);
+                                            s.search_results = Arc::new(new_results);
+                                        }
+                                    }
+                                });
 
                                 let row_is_current = find_match_idx < find_matches.len()
                                     && find_matches[find_match_idx] == i;
@@ -1924,6 +2044,9 @@ fn main() -> eframe::Result<()> {
         create_from_file_path: String::new(),
         search_base: String::new(),
         search_text: String::new(),
+        search_use_date_filtering: false,
+        search_date_from: String::new(),
+        search_date_to: String::new(),
         disc_root: String::new(),
         disc_use_everything: true,
         disc_skip_everything: false,
@@ -1990,6 +2113,27 @@ fn parse_search_result_line(line: &str) -> Option<(u64, String)> {
     let unix = line[0..12].parse::<u64>().ok()?;
     let text = line[13..].to_string();
     Some((unix, text))
+}
+
+fn parse_date_input(s: &str) -> Option<i64> {
+    use chrono::{Local, NaiveDate, NaiveDateTime};
+
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return d.and_hms_opt(0, 0, 0)
+            .and_then(|dt| dt.and_local_timezone(Local).single())
+            .map(|dt| dt.timestamp());
+    }
+
+    if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return dt.and_local_timezone(Local).single().map(|dt| dt.timestamp());
+    }
+
+    s.parse::<i64>().ok()
 }
 
 fn format_unix_time_gui(unix: u64) -> String {

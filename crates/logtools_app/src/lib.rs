@@ -290,6 +290,17 @@ pub fn run_create_base(
 }
 
 pub fn run_search(base_name: String, text: String, presenter: &mut dyn Presenter) -> CommandResult {
+    run_search_date_range(base_name, text, None, None, false, presenter)
+}
+
+pub fn run_search_date_range(
+    base_name: String,
+    text: String,
+    date_from: Option<i64>,
+    date_to: Option<i64>,
+    use_date_filtering: bool,
+    presenter: &mut dyn Presenter,
+) -> CommandResult {
     if base_name.is_empty() || text.is_empty() {
         return CommandResult::Ok;
     }
@@ -297,7 +308,13 @@ pub fn run_search(base_name: String, text: String, presenter: &mut dyn Presenter
     let exit_file_name = tools::get_valid_file_name_with_timestamp(&text);
     let exit_file_path = tools::get_results_file_path(&exit_file_name);
 
-    let search_handle = match operations::start_search(&base_name, &text) {
+    let search_handle = match operations::start_search_date_range(
+        &base_name,
+        &text,
+        date_from,
+        date_to,
+        use_date_filtering,
+    ) {
         Ok(h) => h,
         Err(e) => {
             let msg = format!("Error starting search: {}", e);
@@ -368,6 +385,15 @@ pub fn run_search(base_name: String, text: String, presenter: &mut dyn Presenter
     presenter.search_completed(&path);
 
     CommandResult::Ok
+}
+
+pub fn read_context_around(
+    name: &str,
+    target_ts: i64,
+    n_before: usize,
+    n_after: usize,
+) -> Result<Vec<(i64, String)>, String> {
+    operations::read_context_around(name, target_ts, n_before, n_after)
 }
 
 pub fn run_update_base(name: String, presenter: &mut dyn Presenter) -> CommandResult {

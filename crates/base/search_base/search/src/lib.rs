@@ -7,6 +7,8 @@ use zstd::stream::read::Decoder as ZstdDecoder;
 
 use progress::ParseProgress;
 
+use base_chunks::read_chunk;
+
 #[derive(Clone)]
 enum Expr {
     And(Box<Expr>, Box<Expr>),
@@ -211,6 +213,8 @@ fn worker(
     rx: Receiver<Vec<String>>,
     expr: Arc<Expr>,
     progress: Arc<ParseProgress>,
+    from_unix: Option<u64>,
+    to_unix: Option<u64>,
 ) -> Vec<(u64, String)> {
     let mut out = Vec::new();
 
@@ -226,6 +230,17 @@ fn worker(
                 Ok(v) => v,
                 Err(_) => continue,
             };
+
+            if let Some(f) = from_unix {
+                if unix < f {
+                    continue;
+                }
+            }
+            if let Some(t) = to_unix {
+                if unix > t {
+                    continue;
+                }
+            }
 
             let text = line[13..].to_lowercase();
 
@@ -291,7 +306,7 @@ pub fn search_async(
                     let expr = expr.clone();
                     let progress = progress.clone();
 
-                    thread::spawn(move || worker(rx, expr, progress))
+                    thread::spawn(move || worker(rx, expr, progress, None, None))
                 })
                 .collect();
 
@@ -340,4 +355,176 @@ pub fn search_async(
     };
 
     Ok((progress, handle))
+}
+
+/// Search with an optional unix-timestamp date range.
+///
+/// Chunks are selected with a binary search over their `[first_ts, last_ts]`
+/// bounds, and inside each chunk lines are located with a binary search since
+/// they are stored sorted by timestamp. When `use_date_filtering` is `false`
+/// the whole base is scanned (same as [`search_async`]).
+pub fn search_async_date_range(
+    name: &str,
+    query: &str,
+    date_from: Option<i64>,
+    date_to: Option<i64>,
+    use_date_filtering: bool,
+) -> Result<
+    (
+        Arc<ParseProgress>,
+        thread::JoinHandle<Result<SearchResult, String>>,
+    ),
+    String,
+> {
+    compile_query(query)?;
+
+    let config = read_base_info::load_log(&name)?;
+    let chunks = read_base_info::chunk_files(name, &config)?;
+
+    let query = query.to_string();
+    let progress = Arc::new(ParseProgress::new());
+
+    let max_lines: u64 = config.lines;
+    const MAX_CAPACITY: usize = 10_000;
+
+    progress.set_max_progress(max_lines);
+
+    let from_u64 = if use_date_filtering {
+        date_from.map(|v| if v < 0 { 0 } else { v as u64 })
+    } else {
+        None
+    };
+    let to_u64 = if use_date_filtering {
+        date_to.map(|v| if v < 0 { 0 } else { v as u64 })
+    } else {
+        None
+    };
+
+    let handle = {
+        let progress = progress.clone();
+        let from_u64 = from_u64;
+        let to_u64 = to_u64;
+
+        thread::spawn(move || -> Result<SearchResult, String> {
+            let tokens = tokenize(&query);
+            let expr = Arc::new(parse(&tokens)?);
+
+            let (tx, rx) = bounded::<Vec<String>>(num_cpus::get() * 2);
+            let threads = num_cpus::get();
+
+            let handles: Vec<std::thread::JoinHandle<Vec<(u64, String)>>> = (0..threads)
+                .map(|_| {
+                    let rx = rx.clone();
+                    let expr = expr.clone();
+                    let progress = progress.clone();
+
+                    thread::spawn(move || worker(rx, expr, progress, from_u64, to_u64))
+                })
+                .collect();
+
+            let range = if use_date_filtering {
+                let f = date_from.unwrap_or(i64::MIN);
+                let t = date_to.unwrap_or(i64::MAX);
+                let first_overlap = chunks.partition_point(|c| c.2 < f);
+                let first_past_t = chunks.partition_point(|c| c.1 <= t);
+                if first_overlap < first_past_t {
+                    Some(first_overlap..first_past_t)
+                } else {
+                    None
+                }
+            } else {
+                Some(0..chunks.len())
+            };
+
+            if let Some(range) = range {
+                for idx in range {
+                    let (path, _, _) = &chunks[idx];
+                    let lines = match read_chunk(path) {
+                        Ok(l) => l,
+                        Err(e) => return Err(format!("Cannot read chunk '{}': {}", path, e)),
+                    };
+
+                    let cstart = if use_date_filtering {
+                        date_from
+                            .map(|f| lines.partition_point(|l| l.0 < f))
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
+
+                    let mut batch = Vec::with_capacity(MAX_CAPACITY);
+
+                    for (ts, text) in lines.into_iter().skip(cstart) {
+                        if use_date_filtering {
+                            if let Some(t) = date_to {
+                                if ts > t {
+                                    break;
+                                }
+                            }
+                        }
+
+                        batch.push(format!("{:012} {}", ts, text));
+
+                        if batch.len() >= MAX_CAPACITY {
+                            if tx.send(batch).is_err() {
+                                return Err("workers terminated unexpectedly".to_string());
+                            }
+                            batch = Vec::with_capacity(MAX_CAPACITY);
+                        }
+                    }
+
+                    if !batch.is_empty() {
+                        if tx.send(batch).is_err() {
+                            return Err("workers terminated unexpectedly".to_string());
+                        }
+                    }
+                }
+            }
+
+            drop(tx);
+
+            let mut results = Vec::new();
+            for h in handles {
+                match h.join() {
+                    Ok(mut r) => results.append(&mut r),
+                    Err(_) => return Err("A search worker panicked".to_string()),
+                }
+            }
+
+            results.sort_unstable_by_key(|x| x.0);
+
+            Ok(results)
+        })
+    };
+
+    Ok((progress, handle))
+}
+
+pub fn read_context_around(
+    name: &str,
+    target_ts: i64,
+    n_before: usize,
+    n_after: usize,
+) -> Result<Vec<(i64, String)>, String> {
+    let config = read_base_info::load_log(&name)?;
+    let chunks = read_base_info::chunk_files(name, &config)?;
+
+    let cand = chunks.partition_point(|c| c.1 <= target_ts).saturating_sub(1);
+    if cand >= chunks.len() {
+        return Ok(Vec::new());
+    }
+    if chunks[cand].2 < target_ts {
+        return Ok(Vec::new());
+    }
+
+    let (path, _, _) = &chunks[cand];
+    let lines = read_chunk(path)
+        .map_err(|e| format!("Cannot read chunk '{}': {}", path, e))?;
+
+    let pos = lines.partition_point(|l| l.0 < target_ts);
+    let center = pos.min(lines.len().saturating_sub(1));
+    let start = center.saturating_sub(n_before);
+    let end = (center + 1 + n_after).min(lines.len());
+
+    Ok(lines[start..end].to_vec())
 }

@@ -13,3 +13,4 @@ tokio = { version = "1", features = ["full"] }
 read_base_info = {path = "../../read_base_info"}
 write_result = {path = "../write_result"}
 progress = {path = "../../progress"}
+base_chunks = {path = "../../base_chunks"}
