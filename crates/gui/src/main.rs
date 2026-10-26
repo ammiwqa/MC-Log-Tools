@@ -38,6 +38,12 @@ mod theme {
 
     pub const RED: Color32 = Color32::from_rgb(0xEC, 0x6A, 0x88);
     pub const AMBER: Color32 = Color32::from_rgb(0xE0, 0xAF, 0x5F);
+
+    // Find in page
+    pub const FIND_ROW_CURRENT: Color32 = Color32::from_rgb(0x3A, 0x2A, 0x15);
+    pub const FIND_MATCH_BG: Color32 = Color32::from_rgb(0xE0, 0xAF, 0x5F);
+    pub const FIND_MATCH_CURRENT_BG: Color32 = Color32::from_rgb(0xEC, 0x6A, 0x88);
+    pub const FIND_MATCH_TEXT: Color32 = Color32::from_rgb(0x05, 0x0D, 0x0A);
 }
 
 fn strip_path_quotes(raw: &str) -> &str {
@@ -418,6 +424,13 @@ struct SearchResultsWindowState {
     search_results: Arc<Vec<(u64, String)>>,
     results_path: Option<String>,
     nav_target_row: Option<usize>,
+
+    find_open: bool,
+    find_text: String,
+    find_matches: Vec<usize>,
+    find_match_idx: usize,
+    find_last_text: String,
+    find_was_open: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -617,6 +630,12 @@ impl LogtoolsApp {
                             search_results: Arc::new(self.search_results.clone()),
                             results_path: self.results_path.clone(),
                             nav_target_row: None,
+                            find_open: false,
+                            find_text: String::new(),
+                            find_matches: Vec::new(),
+                            find_match_idx: 0,
+                            find_last_text: String::new(),
+                            find_was_open: false,
                         })));
                 }
                 CmdKind::Discover => self.load_search_preview(),
@@ -923,6 +942,12 @@ impl LogtoolsApp {
                                     search_results: Arc::new(self.search_results.clone()),
                                     results_path: self.results_path.clone(),
                                     nav_target_row: None,
+                                    find_open: false,
+                                    find_text: String::new(),
+                                    find_matches: Vec::new(),
+                                    find_match_idx: 0,
+                                    find_last_text: String::new(),
+                                    find_was_open: false,
                                 })));
                         }
                     }
@@ -968,13 +993,46 @@ impl LogtoolsApp {
                     return;
                 }
 
-                let (base, text, results, results_path) = {
-                    let s = state_arc.lock().unwrap();
+                let (
+                    base,
+                    text,
+                    results,
+                    results_path,
+                    find_open,
+                    find_text,
+                    find_matches,
+                    find_match_idx,
+                    find_was_open,
+                ) = {
+                    let mut s = state_arc.lock().unwrap();
+
+                    if ctx.input(|i| i.key_pressed(egui::Key::F) && i.modifiers.ctrl) {
+                        s.find_open = !s.find_open;
+                    }
+                    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        s.find_open = false;
+                    }
+
+                    let base = s.search_base.clone();
+                    let text = s.search_text.clone();
+                    let results = s.search_results.clone();
+                    let results_path = s.results_path.clone();
+                    let find_open = s.find_open;
+                    let find_text = s.find_text.clone();
+                    let find_matches = s.find_matches.clone();
+                    let find_match_idx = s.find_match_idx;
+                    let find_was_open = s.find_was_open;
+
                     (
-                        s.search_base.clone(),
-                        s.search_text.clone(),
-                        s.search_results.clone(),
-                        s.results_path.clone(),
+                        base,
+                        text,
+                        results,
+                        results_path,
+                        find_open,
+                        find_text,
+                        find_matches,
+                        find_match_idx,
+                        find_was_open,
                     )
                 };
 
@@ -994,6 +1052,10 @@ impl LogtoolsApp {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.add(ghost_button("Close")).clicked() {
                                 state_arc.lock().unwrap().open = false;
+                            }
+
+                            if ui.add(ghost_button("Find")).clicked() {
+                                state_arc.lock().unwrap().find_open = true;
                             }
 
                             if ui.add(primary_button("Open results file")).clicked() {
@@ -1112,13 +1174,121 @@ impl LogtoolsApp {
                             .monospace()
                             .strong(),
                     );
+
+                    let mut find_buf = find_text.clone();
+                    let mut find_nav: Option<isize> = None;
+                    let mut find_close = false;
+                    let just_opened = find_open && !find_was_open;
+
+                    if find_open {
+                        ui.add_space(4.0);
+                        ui.separator();
+                        ui.add_space(4.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Find in results:")
+                                    .small()
+                                    .color(theme::TEXT_MUTED),
+                            );
+                            ui.add_space(4.0);
+
+                            let find_resp = ui.add(
+                                egui::TextEdit::singleline(&mut find_buf)
+                                    .desired_width(260.0)
+                                    .hint_text("text to find within results"),
+                            );
+
+                            if just_opened {
+                                find_resp.request_focus();
+                            }
+
+                            let prev = ui.add(small_button("▲"));
+                            let next = ui.add(small_button("▼"));
+
+                            if prev.clicked() {
+                                find_nav = Some(-1);
+                            }
+                            if next.clicked() {
+                                find_nav = Some(1);
+                            }
+
+                            let matches_len = find_matches.len();
+                            let idx = find_match_idx.min(matches_len.saturating_sub(1));
+                            if matches_len == 0 {
+                                ui.label(
+                                    egui::RichText::new("0 matches").small().color(theme::RED),
+                                );
+                            } else {
+                                ui.label(
+                                    egui::RichText::new(format!("{} of {}", idx + 1, matches_len))
+                                        .small()
+                                        .color(theme::TEXT_MUTED),
+                                );
+                            }
+
+                            if ui.add(small_button("×")).clicked() {
+                                find_close = true;
+                            }
+
+                            if find_resp.has_focus() {
+                                if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+                                    find_nav = Some(-1);
+                                }
+                                if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+                                    find_nav = Some(1);
+                                }
+                            }
+                        });
+
+                        ui.add_space(4.0);
+                    }
+
+                    let target_row = {
+                        let mut s = state_arc.lock().unwrap();
+
+                        if find_buf != s.find_text {
+                            s.find_text = find_buf;
+                            s.find_last_text = s.find_text.clone();
+                            s.find_matches.clear();
+                            s.find_match_idx = 0;
+                            if !s.find_text.is_empty() {
+                                let needle = s.find_text.to_lowercase();
+                                for (i, (_, line)) in results.iter().enumerate() {
+                                    if line.to_lowercase().contains(&needle) {
+                                        s.find_matches.push(i);
+                                    }
+                                }
+                                if !s.find_matches.is_empty() {
+                                    s.find_match_idx = 0;
+                                    s.nav_target_row = Some(s.find_matches[0]);
+                                }
+                            }
+                        }
+
+                        if let Some(dir) = find_nav {
+                            let len = s.find_matches.len() as isize;
+                            if len > 0 {
+                                let new_idx = (s.find_match_idx as isize + dir).rem_euclid(len);
+                                s.find_match_idx = new_idx as usize;
+                                s.nav_target_row = Some(s.find_matches[s.find_match_idx]);
+                            }
+                        }
+
+                        if find_close {
+                            s.find_open = false;
+                        }
+
+                        s.find_was_open = s.find_open;
+                        s.nav_target_row.take()
+                    };
+
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(4.0);
 
                     let row_height = ui.text_style_height(&egui::TextStyle::Monospace) + 4.0;
 
-                    let target_row = state_arc.lock().unwrap().nav_target_row.take();
                     if let Some(target) = target_row {
                         let target_y = target as f32 * row_height;
                         let scroll_state_id = ui.id().with(egui::Id::new("search_results_window"));
@@ -1161,7 +1331,14 @@ impl LogtoolsApp {
                                     egui::Sense::hover(),
                                 );
 
-                                let bg = if i % 2 == 0 {
+                                let row_is_current = find_match_idx < find_matches.len()
+                                    && find_matches[find_match_idx] == i;
+                                let row_is_match =
+                                    !find_text.is_empty() && find_matches.binary_search(&i).is_ok();
+
+                                let bg = if row_is_current {
+                                    theme::FIND_ROW_CURRENT
+                                } else if i % 2 == 0 {
                                     theme::SURFACE
                                 } else {
                                     egui::Color32::from_rgb(0x11, 0x11, 0x14)
@@ -1204,27 +1381,95 @@ impl LogtoolsApp {
                                     theme::GREEN,
                                 );
                                 let text_color = log_line_color(line);
-                                let line_galley = ui.painter().layout_no_wrap(
-                                    line.clone(),
-                                    egui::FontId::monospace(12.5),
-                                    text_color,
-                                );
+                                let font = egui::FontId::monospace(12.5);
+                                let line_y = row_rect.center().y
+                                    - ui.text_style_height(&egui::TextStyle::Monospace) * 0.5;
 
                                 let date_x = row_rect.left() + 8.0;
                                 let line_x = date_x + 200.0;
                                 let date_y = row_rect.center().y - date_galley.size().y * 0.5;
-                                let line_y = row_rect.center().y - line_galley.size().y * 0.5;
 
                                 ui.painter().galley(
                                     egui::pos2(date_x, date_y),
                                     date_galley,
                                     theme::GREEN,
                                 );
-                                ui.painter().galley(
-                                    egui::pos2(line_x, line_y),
-                                    line_galley,
-                                    text_color,
-                                );
+
+                                if row_is_match {
+                                    if let Some((start, end)) = find_ci_span(line, &find_text) {
+                                        let before = &line[..start];
+                                        let matched = &line[start..end];
+                                        let after = &line[end..];
+
+                                        let before_galley = ui.painter().layout_no_wrap(
+                                            before.to_string(),
+                                            font.clone(),
+                                            text_color,
+                                        );
+                                        let before_w = before_galley.size().x;
+                                        let matched_galley = ui.painter().layout_no_wrap(
+                                            matched.to_string(),
+                                            font.clone(),
+                                            theme::FIND_MATCH_TEXT,
+                                        );
+                                        let matched_w = matched_galley.size().x;
+                                        let after_galley = ui.painter().layout_no_wrap(
+                                            after.to_string(),
+                                            font,
+                                            text_color,
+                                        );
+
+                                        let mut x = line_x;
+                                        ui.painter().galley(
+                                            egui::pos2(x, line_y),
+                                            before_galley,
+                                            text_color,
+                                        );
+                                        x += before_w;
+
+                                        let m_rect = egui::Rect::from_min_size(
+                                            egui::pos2(x, row_rect.top()),
+                                            egui::vec2(matched_w, row_rect.height()),
+                                        );
+                                        let m_bg = if row_is_current {
+                                            theme::FIND_MATCH_CURRENT_BG
+                                        } else {
+                                            theme::FIND_MATCH_BG
+                                        };
+                                        ui.painter().rect_filled(m_rect, 2.0, m_bg);
+                                        ui.painter().galley(
+                                            egui::pos2(x, line_y),
+                                            matched_galley,
+                                            theme::FIND_MATCH_TEXT,
+                                        );
+                                        x += matched_w;
+
+                                        ui.painter().galley(
+                                            egui::pos2(x, line_y),
+                                            after_galley,
+                                            text_color,
+                                        );
+                                    } else {
+                                        let line_galley = ui.painter().layout_no_wrap(
+                                            line.clone(),
+                                            font,
+                                            text_color,
+                                        );
+                                        ui.painter().galley(
+                                            egui::pos2(line_x, line_y),
+                                            line_galley,
+                                            text_color,
+                                        );
+                                    }
+                                } else {
+                                    let line_galley =
+                                        ui.painter().layout_no_wrap(line.clone(), font, text_color);
+                                    ui.painter().galley(
+                                        egui::pos2(line_x, line_y),
+                                        line_galley,
+                                        text_color,
+                                    );
+                                }
                             }
 
                             ctx.data_mut(|d| d.insert_temp(last_day_id, last_day));
@@ -1712,6 +1957,30 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(app))
         }),
     )
+}
+
+fn find_ci_span(haystack: &str, needle: &str) -> Option<(usize, usize)> {
+    let needle_lc: String = needle.to_lowercase();
+    if needle_lc.is_empty() {
+        return None;
+    }
+    let chars: Vec<(usize, char)> = haystack.char_indices().collect();
+    let mut si = 0;
+    while si < chars.len() {
+        let mut acc = String::new();
+        let mut ei = si;
+        while ei < chars.len() && acc.len() < needle_lc.len() {
+            acc.extend(chars[ei].1.to_lowercase());
+            ei += 1;
+        }
+        if acc == needle_lc {
+            let start = chars[si].0;
+            let end = chars[ei - 1].0 + chars[ei - 1].1.len_utf8();
+            return Some((start, end));
+        }
+        si += 1;
+    }
+    None
 }
 
 fn parse_search_result_line(line: &str) -> Option<(u64, String)> {
