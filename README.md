@@ -105,7 +105,7 @@ logtools update <BASE>
 <br><br>
 ## 4. Discover
 \>    Discovering minecraft directions with logs on your disk from ROOT.  
-\>    Using [Everething](#everething-1) if it configured.  
+\>    Using [Everything](#Everything-1) if it configured.  
 \>    Output: .txt file with paths to found bases (using in [Create Base](#1-create-database) with ```--from-file``` flag)
 
 ```bash
@@ -121,15 +121,15 @@ Path to output file. Default: ```%AppData%\logtools\results\mc_log_dirs.txt```
 -o, --out <file>
 ```
   
-#### Everething  
+#### Everything  
 Path to ```Everything64.dll``` or ```es.exe```
 ```
---es <path-to-everething>
+--es <path-to-Everything>
 ```
 
   
-#### No Everething  
-Disable Everething if it configured or found automaticly.
+#### No Everything  
+Disable Everything if it configured or found automaticly.
 ```
 --no-everything
 ```
@@ -138,7 +138,7 @@ Disable Everething if it configured or found automaticly.
 ---
 
 ### Examples
-<br>Discovering all disk (with [everething](#everething-1) if it [configured](#avaliable-config-options)):  
+<br>Discovering all disk (with [Everything](#Everything-1) if it [configured](#avaliable-config-options)):  
 ```bash
 logtools discover
 ```
@@ -153,7 +153,7 @@ Discovering path ```D:/Minecraft``` and output in ```D:/Minecraft/paths.txt```:
 logtools discover --out "D:/paths.txt" "D:/Minecraft"
 ```
 
-Discovering all computer with [Everething](#everething-1):  
+Discovering all computer with [Everything](#Everything-1):  
 ```bash
 logtools discover --es "C:/Everything-SDK/dll/Everything64.dll"
 ```
@@ -198,7 +198,7 @@ logtools config <OPTION> <VARIABLE>
 ```
 
 #### Avaliable config options:
- + ```everything_dll``` - path to [Everething64.dll](#everething-1)
+ + ```everything_dll``` - path to [Everything64.dll](#Everything-1)
  + ```confirm_delete``` - deletion confirmation (```true```/```false```)   [```true``` by default]
 
 <br> Display all avaliable options:
@@ -226,11 +226,11 @@ logtools <COMMAND> --help
 
 <br><br>
 
-## Everething
-Logtools using Everething in [discovery](#4-discover) module.  
-You can download Everething here:
- + [Everething SDK](https://www.voidtools.com/ru-ru/downloads/#sdk)  (Everething64.dll)  
- Extract zip -> Open `dll` directory -> `Everething64.dll` here.
+## Everything
+Logtools using Everything in [discovery](#4-discover) module.  
+You can download Everything here:
+ + [Everything SDK](https://www.voidtools.com/ru-ru/downloads/#sdk)  (Everything64.dll)  
+ Extract zip -> Open `dll` directory -> `Everything64.dll` here.
  + [ES for command prompt](https://www.voidtools.com/ru-ru/downloads/#cli)  (es.exe)  
  Extract zip -> `es.exe` here.
  
