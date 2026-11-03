@@ -1,0 +1,70 @@
+use crate::app::LogtoolsApp;
+use crate::theme;
+use eframe::egui;
+
+pub fn render(ui: &mut egui::Ui, app: &mut LogtoolsApp) {
+    theme::screen_title(ui, "Config", crate::screens::Screen::Config.subtitle());
+
+    ui.add_enabled_ui(!app.busy, |ui| {
+        theme::section_label(ui, "everything_dll");
+
+        ui.add(
+            egui::TextEdit::singleline(&mut app.cfg_everything_dll)
+                .desired_width(ui.available_width()),
+        );
+
+        ui.add_space(8.0);
+
+        theme::section_label(ui, "confirm_delete");
+
+        ui.add(
+            egui::TextEdit::singleline(&mut app.cfg_confirm_delete)
+                .desired_width(ui.available_width()),
+        );
+
+        ui.add_space(8.0);
+
+        if ui.add(theme::primary_button("Save")).clicked() {
+            let params = vec![
+                (
+                    "everything_dll".to_string(),
+                    app.cfg_everything_dll.trim().to_string(),
+                ),
+                (
+                    "confirm_delete".to_string(),
+                    app.cfg_confirm_delete.trim().to_string(),
+                ),
+            ];
+
+            app.spawn_command(
+                crate::app::CmdKind::ConfigParams,
+                crate::app::GuiCommand::ConfigParams { params },
+            );
+        }
+    });
+
+    ui.add_space(8.0);
+    ui.separator();
+
+    let map = tools::config::load_config();
+
+    if map.is_empty() {
+        ui.label(theme::muted("No config parameters set."));
+    } else {
+        theme::section_label(ui, "CURRENT VALUES");
+
+        for (k, v) in &map {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{:<20}", k))
+                        .monospace()
+                        .color(theme::GREEN),
+                );
+                ui.label(
+                    egui::RichText::new(v.as_str().unwrap_or(&v.to_string()).to_string())
+                        .monospace(),
+                );
+            });
+        }
+    }
+}
