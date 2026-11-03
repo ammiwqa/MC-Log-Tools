@@ -1,11 +1,10 @@
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use eframe::egui;
-use logtools_app::{CommandResult, Presenter};
+use logtools_app::CommandResult;
 use read_base_info::BaseInfo;
 
 use crate::presenter::{EguiPresenter, PresenterEvent};
@@ -55,7 +54,7 @@ pub enum CmdKind {
     ConfigParams,
 }
 
-struct Done {
+pub(crate) struct Done {
     result: CommandResult,
 }
 
@@ -149,8 +148,10 @@ impl LogtoolsApp {
 
         app.reload_bases();
 
-        app.cfg_everything_dll = tools::config::get_config_param("everything_dll").unwrap_or_default();
-        app.cfg_confirm_delete = tools::config::get_config_param("confirm_delete").unwrap_or_default();
+        app.cfg_everything_dll =
+            tools::config::get_config_param("everything_dll").unwrap_or_default();
+        app.cfg_confirm_delete =
+            tools::config::get_config_param("confirm_delete").unwrap_or_default();
 
         app.search_base = tools::config::get_config_param("last_search_base").unwrap_or_default();
         app.search_text = tools::config::get_config_param("last_search_text").unwrap_or_default();
@@ -185,16 +186,14 @@ impl LogtoolsApp {
                     date_from,
                     date_to,
                     use_date_filtering,
-                } => {
-                    logtools_app::run_search_date_range(
-                        base,
-                        text,
-                        date_from,
-                        date_to,
-                        use_date_filtering,
-                        &mut presenter,
-                    )
-                }
+                } => logtools_app::run_search_date_range(
+                    base,
+                    text,
+                    date_from,
+                    date_to,
+                    use_date_filtering,
+                    &mut presenter,
+                ),
                 GuiCommand::UpdateBase { name } => {
                     logtools_app::run_update_base(name, &mut presenter)
                 }
@@ -323,7 +322,9 @@ impl LogtoolsApp {
         if let Some(path) = &self.results_path {
             if let Ok(content) = std::fs::read_to_string(path) {
                 for line in content.lines() {
-                    if let Some((unix, text)) = crate::results_window::parse_search_result_line(line) {
+                    if let Some((unix, text)) =
+                        crate::results_window::parse_search_result_line(line)
+                    {
                         self.search_results.push((unix, text));
                     }
                 }
@@ -428,7 +429,10 @@ impl LogtoolsApp {
                         .collect();
 
                     let from_file = if self.create_from_file {
-                        Some(crate::theme::strip_path_quotes(self.create_from_file_path.trim()).to_string())
+                        Some(
+                            crate::theme::strip_path_quotes(self.create_from_file_path.trim())
+                                .to_string(),
+                        )
                     } else {
                         None
                     };

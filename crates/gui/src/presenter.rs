@@ -1,7 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::{Sender, channel};
 
-use logtools_app::{CommandResult, Presenter};
+use logtools_app::Presenter;
 
 use crate::theme::open_in_system_app;
 
@@ -68,6 +68,7 @@ impl Presenter for EguiPresenter {
 }
 
 impl EguiPresenter {
+    #[allow(dead_code)]
     pub fn new() -> (Self, std::sync::mpsc::Receiver<PresenterEvent>) {
         let (tx, rx) = channel::<PresenterEvent>();
         (Self { tx }, rx)
