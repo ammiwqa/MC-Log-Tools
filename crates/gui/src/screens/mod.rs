@@ -41,15 +41,11 @@ impl Screen {
     ];
 }
 
-pub fn render_nav_panel(
-    app: &mut crate::app::LogtoolsApp,
-    ui: &mut eframe::egui::Ui,
-) {
+pub fn render_nav_panel(app: &mut crate::app::LogtoolsApp, ui: &mut eframe::egui::Ui) {
     ui.add_space(18.0);
 
     ui.horizontal(|ui| {
-        let (rect, _) =
-            ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
         ui.painter().rect_filled(rect, 3.0, theme::GREEN);
 
         ui.label(
@@ -107,14 +103,7 @@ pub fn render_nav_panel(
 
     ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
         ui.horizontal(|ui| {
-            theme::status_dot(
-                ui,
-                if app.busy {
-                    theme::AMBER
-                } else {
-                    theme::GREEN
-                },
-            );
+            theme::status_dot(ui, if app.busy { theme::AMBER } else { theme::GREEN });
 
             ui.label(
                 egui::RichText::new(if app.busy { "working..." } else { "ready" })
