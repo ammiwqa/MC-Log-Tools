@@ -7,3 +7,6 @@ edition = "2021"
 sha2 = "0.10"
 hex = "0.4"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+[dev-dependencies]
+flate2 = "1.0"

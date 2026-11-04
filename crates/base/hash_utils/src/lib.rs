@@ -147,3 +147,149 @@ pub fn compute_gzip_payload_hash(path: &Path) -> io::Result<u64> {
 
     Ok(hasher.digest())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn make_gzip(path: &Path, payload: &[u8]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        encoder.write_all(payload).unwrap();
+        encoder.finish().unwrap();
+    }
+
+    #[test]
+    fn sha256_of_empty_and_fixed_input() {
+        let empty = sha256_of(&[]);
+        assert_eq!(empty.len(), 64);
+        assert_ne!(empty, sha256_of(b"hello"));
+
+        let a = sha256_of(b"hello");
+        assert_eq!(a, sha256_of(b"hello")); // deterministic
+        assert_ne!(a, sha256_of(b"Hello")); // case-sensitive
+    }
+
+    #[test]
+    fn compute_file_hash_matches_sha256_of() {
+        let dir = std::env::temp_dir().join(format!(
+            "lt-hash-file-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sample.txt");
+        std::fs::write(&path, "hello world").unwrap();
+
+        let from_file = compute_file_hash(&path).unwrap();
+        let from_bytes = sha256_of(b"hello world");
+        assert_eq!(from_file, from_bytes);
+    }
+
+    #[test]
+    fn compute_file_hash_nonexistent_is_error() {
+        let err = compute_file_hash(Path::new("/nonexistent/file.bin")).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn compute_gzip_payload_hash_valid_gzip() {
+        let dir = std::env::temp_dir().join(format!(
+            "lt-hash-gz-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("data.log.gz");
+        let payload = b"line one\nline two\nline three\n";
+        make_gzip(&path, payload);
+
+        let h1 = compute_gzip_payload_hash(&path).unwrap();
+        let h2 = compute_gzip_payload_hash(&path).unwrap();
+        assert_eq!(h1, h2); // deterministic
+        assert_ne!(h1, 0);
+    }
+
+    #[test]
+    fn compute_gzip_payload_hash_different_payloads_differ() {
+        let dir = std::env::temp_dir().join(format!(
+            "lt-hash-gzdiff-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path_a = dir.join("a.log.gz");
+        let path_b = dir.join("b.log.gz");
+        make_gzip(&path_a, b"payload A\n");
+        make_gzip(&path_b, b"payload B\n");
+
+        let h_a = compute_gzip_payload_hash(&path_a).unwrap();
+        let h_b = compute_gzip_payload_hash(&path_b).unwrap();
+        assert_ne!(h_a, h_b);
+    }
+
+    #[test]
+    fn compute_gzip_payload_hash_not_a_gzip_is_error() {
+        let dir = std::env::temp_dir().join(format!(
+            "lt-hash-notgz-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("notgz.log.gz");
+        std::fs::write(&path, "this is not gzip data at all").unwrap();
+
+        let err = compute_gzip_payload_hash(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn compute_gzip_payload_hash_empty_gzip() {
+        let dir = std::env::temp_dir().join(format!(
+            "lt-hash-emptygz-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("empty.log.gz");
+        make_gzip(&path, b"");
+
+        let h = compute_gzip_payload_hash(&path).unwrap();
+        assert_ne!(h, 0);
+    }
+
+    #[test]
+    fn compute_gzip_payload_hash_truncated_gzip_is_error() {
+        let dir = std::env::temp_dir().join(format!(
+            "lt-hash-trunc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("trunc.log.gz");
+        // valid gzip header but no payload / too short
+        std::fs::write(&path, &[0x1f, 0x8b, 0x08, 0x00, 0, 0, 0, 0, 0, 0]).unwrap();
+
+        let err = compute_gzip_payload_hash(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+}

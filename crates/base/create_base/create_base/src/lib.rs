@@ -11,7 +11,43 @@ use log_parser::ErrorStats;
 use rayon::prelude::*;
 use read_base_info::{LatestInfo, PathEntry, TimeInfo, save_log};
 
+mod resources;
+
+pub use resources::peak_rss_bytes;
+
 const DEBUG: bool = false;
+
+#[derive(Debug, Clone)]
+pub struct CreateOptions {
+    pub chunk_lines: u64,
+    pub sort_run_lines: u64,
+}
+
+impl Default for CreateOptions {
+    fn default() -> Self {
+        Self {
+            chunk_lines: read_base_info::DEFAULT_CHUNK_LINES,
+            sort_run_lines: read_base_info::DEFAULT_SORT_RUN_LINES,
+        }
+    }
+}
+
+impl CreateOptions {
+    pub fn sanitized(self) -> Self {
+        Self {
+            chunk_lines: if self.chunk_lines == 0 {
+                read_base_info::DEFAULT_CHUNK_LINES
+            } else {
+                self.chunk_lines
+            },
+            sort_run_lines: if self.sort_run_lines == 0 {
+                read_base_info::DEFAULT_SORT_RUN_LINES
+            } else {
+                self.sort_run_lines
+            },
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct CreateResult {
@@ -19,10 +55,12 @@ pub struct CreateResult {
     pub parsed_gz_lines: usize,
     pub latest_files: usize,
     pub parsed_latest_lines: usize,
+    pub input_lines: usize,
     pub gz_errors: ErrorStats,
     pub latest_errors: ErrorStats,
     pub total_lines: usize,
     pub duplicate_files: usize,
+    pub peak_memory_bytes: Option<u64>,
 }
 
 fn debug_stage(message: &str) {
@@ -51,6 +89,16 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
     name: String,
     progress: &P,
 ) -> Result<CreateResult, Box<dyn std::error::Error>> {
+    create_base_with_options(paths, name, CreateOptions::default(), progress)
+}
+
+pub fn create_base_with_options<P: ProgressReporter + ?Sized>(
+    paths: Vec<String>,
+    name: String,
+    options: CreateOptions,
+    progress: &P,
+) -> Result<CreateResult, Box<dyn std::error::Error>> {
+    let options = options.sanitized();
     let total_start = Instant::now();
 
     debug_stage(&format!(
@@ -313,16 +361,26 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
 
     debug_stage(&format!("STEP 6: parsing {} gzip files", all_logs.len()));
 
+    let base_dir = read_base_info::base_dir(&name)?;
+    let sort_dir = base_dir.join(".sort-tmp");
+
+    let mut sorter = base_chunks::external_sort::ExternalSorter::new(
+        &sort_dir,
+        options.sort_run_lines as usize,
+    )?;
+
     progress.set_message("Parsing gzip logs");
     progress.set_total(all_logs.len() as u64);
 
     let parse_gz_start = Instant::now();
+    let mut parsed_gz_lines = 0usize;
 
-    let (mut logs, errors) = log_parser::parse_logs(all_logs, progress)?;
+    let errors = log_parser::parse_logs_streaming(all_logs, progress, |batch| {
+        parsed_gz_lines += batch.len();
+        sorter.push_batch(batch)
+    })?;
 
     progress.finish();
-
-    let parsed_gz_lines = logs.len();
 
     progress.stage_completed(StageStats {
         stage: StageKind::GzipParsing,
@@ -354,6 +412,8 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
     progress.finish();
 
     let parsed_latest_lines = logs_latest.len();
+
+    sorter.push_batch(logs_latest)?;
 
     progress.stage_completed(StageStats {
         stage: StageKind::LatestParsing,
@@ -390,18 +450,33 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
         }
     }
 
-    logs.extend(logs_latest);
-    logs.sort_unstable_by_key(|x| x.0);
-
-    let lines = logs.len();
+    let expected_lines = parsed_gz_lines + parsed_latest_lines;
     let now = system_time_secs();
 
     progress.set_message("Writing chunks");
-    progress.set_total(lines as u64);
+    progress.set_total(expected_lines as u64);
 
-    let chunks = base_chunks::write_chunks(&name, &logs, progress)?;
+    let sorted = sorter.finish()?;
+
+    let chunks = base_chunks::write_chunks_streaming(
+        &name,
+        sorted,
+        options.chunk_lines as usize,
+        progress,
+    )?;
 
     progress.finish();
+
+    let lines: usize = chunks.iter().map(|chunk| chunk.lines as usize).sum();
+    let input_lines = parsed_gz_lines + parsed_latest_lines;
+
+    if lines > input_lines {
+        eprintln!(
+            "[create_base][WARNING] total lines in base ({}) exceeds parsed input lines ({}); \
+             likely cause: latest.log overlaps with gz files (same lines appear in both sources)",
+            lines, input_lines
+        );
+    }
 
     let cfg = read_base_info::BaseConfig {
         name: name.clone(),
@@ -412,31 +487,36 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
         time: TimeInfo {
             creation_unix: now.to_string(),
             edit_unix: now.to_string(),
-            fld_unix: logs
+            fld_unix: chunks
                 .first()
-                .map(|(ts, _)| ts.to_string())
+                .map(|chunk| chunk.first_ts.to_string())
                 .unwrap_or_default(),
-            lld_unix: logs
+            lld_unix: chunks
                 .last()
-                .map(|(ts, _)| ts.to_string())
+                .map(|chunk| chunk.last_ts.to_string())
                 .unwrap_or_default(),
         },
         paths: read_base_info::normalize_paths(entries_by_path.into_values().collect()),
         chunks,
+        chunk_lines: options.chunk_lines,
     };
 
     save_log(&name, &cfg)?;
 
+    let peak_memory_bytes = peak_rss_bytes();
+
     debug_stage(&format!(
         "SUCCESS: total elapsed={:?}, gzip files={}, gzip lines={}, \
-         latest files={}, latest lines={}, total lines={}, duplicates={}",
+         latest files={}, latest lines={}, total lines={}, duplicates={}, \
+         peak_rss={:?}",
         total_start.elapsed(),
         gz_files_count,
         parsed_gz_lines,
         latest_params_len,
         parsed_latest_lines,
         lines,
-        duplicate_files
+        duplicate_files,
+        peak_memory_bytes
     ));
 
     Ok(CreateResult {
@@ -444,10 +524,12 @@ pub fn create_base<P: ProgressReporter + ?Sized>(
         parsed_gz_lines,
         latest_files: latest_params_len,
         parsed_latest_lines,
+        input_lines,
         gz_errors: errors,
         latest_errors,
         total_lines: lines,
         duplicate_files,
+        peak_memory_bytes,
     })
 }
 

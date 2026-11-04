@@ -8,6 +8,82 @@ use progress::ProgressReporter;
 const TS_WIDTH: usize = 12;
 const OUT_BUF_SIZE: usize = 16 * 1024 * 1024;
 
+/// Streaming zstd writer for chunk files.
+///
+/// Unlike [`write_logs_to_zstd`], this keeps only the current output buffer in
+/// memory and can be fed one parsed line at a time. It is used by the external
+/// sort merge so a chunk never has to be materialized as a second `Vec`.
+pub struct ZstdLogWriter {
+    encoder: Option<Encoder<'static, BufWriter<File>>>,
+    buf: Vec<u8>,
+}
+
+impl ZstdLogWriter {
+    pub fn create(path: &str) -> std::io::Result<Self> {
+        let file = File::create(path)?;
+        let buf_writer = BufWriter::with_capacity(OUT_BUF_SIZE, file);
+
+        let mut encoder = Encoder::new(buf_writer, 1)?;
+        encoder.multithread(num_cpus::get() as u32)?;
+
+        Ok(Self {
+            encoder: Some(encoder),
+            buf: Vec::with_capacity(OUT_BUF_SIZE),
+        })
+    }
+
+    /// Append one `(timestamp, message)` line to the chunk.
+    pub fn write_line(&mut self, ts: i64, msg: &str) -> std::io::Result<()> {
+        write_fixed_ts(&mut self.buf, ts);
+        self.buf.push(b' ');
+        self.buf.extend_from_slice(msg.as_bytes());
+        self.buf.push(b'\n');
+
+        if self.buf.len() >= OUT_BUF_SIZE {
+            self.flush_buf()?;
+        }
+
+        Ok(())
+    }
+
+    fn flush_buf(&mut self) -> std::io::Result<()> {
+        if !self.buf.is_empty() {
+            if let Some(encoder) = self.encoder.as_mut() {
+                encoder.write_all(&self.buf)?;
+            }
+            self.buf.clear();
+        }
+
+        Ok(())
+    }
+
+    /// Flush all buffered lines and finish the zstd frame.
+    pub fn finish(mut self) -> std::io::Result<()> {
+        self.flush_buf()?;
+
+        if let Some(encoder) = self.encoder.take() {
+            let mut writer = encoder.finish()?;
+            writer.flush()?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop for ZstdLogWriter {
+    fn drop(&mut self) {
+        if self.encoder.is_some() {
+            let _ = self.flush_buf();
+
+            if let Some(encoder) = self.encoder.take() {
+                if let Ok(mut writer) = encoder.finish() {
+                    let _ = writer.flush();
+                }
+            }
+        }
+    }
+}
+
 pub fn write_logs_to_zstd_with_progress<P: ProgressReporter + ?Sized>(
     logs: &[(i64, String)],
     path: &str,
@@ -21,36 +97,14 @@ pub fn write_logs_to_zstd<P: ProgressReporter + ?Sized>(
     path: &str,
     progress: &P,
 ) -> std::io::Result<()> {
-    let file = File::create(path)?;
-
-    let buf_writer = BufWriter::with_capacity(OUT_BUF_SIZE, file);
-
-    let mut encoder = Encoder::new(buf_writer, 1)?;
-
-    encoder.multithread(num_cpus::get() as u32)?;
-
-    let mut encoder = encoder.auto_finish();
-
-    let mut local_buf = Vec::with_capacity(OUT_BUF_SIZE);
+    let mut writer = ZstdLogWriter::create(path)?;
 
     for (ts, msg) in logs {
         progress.inc(1);
-        write_fixed_ts(&mut local_buf, *ts);
-        local_buf.push(b' ');
-        local_buf.extend_from_slice(msg.as_bytes());
-        local_buf.push(b'\n');
-
-        if local_buf.len() >= OUT_BUF_SIZE {
-            encoder.write_all(&local_buf)?;
-            local_buf.clear();
-        }
+        writer.write_line(*ts, msg)?;
     }
 
-    if !local_buf.is_empty() {
-        encoder.write_all(&local_buf)?;
-    }
-
-    Ok(())
+    writer.finish()
 }
 
 pub fn read_logs_from_zstd(path: &str) -> std::io::Result<Vec<(i64, String)>> {

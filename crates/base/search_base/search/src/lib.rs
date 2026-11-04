@@ -159,6 +159,9 @@ fn parse(tokens: &[Token]) -> Result<Expr, String> {
     }
 
     fn factor(tokens: &[Token], i: &mut usize) -> Result<Expr, String> {
+        if *i >= tokens.len() {
+            return Err("Bad query: unexpected end of query".to_string());
+        }
         match &tokens[*i] {
             Token::Not => {
                 *i += 1;

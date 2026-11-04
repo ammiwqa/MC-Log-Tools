@@ -15,3 +15,6 @@ progress = {path = "../../progress"}
 zip_writer = {path = "../zip_writer" }
 read_base_info = { path = "../../read_base_info" }
 base_chunks = { path = "../../base_chunks" }
+
+[dev-dependencies]
+flate2 = "1.0"

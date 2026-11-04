@@ -39,6 +39,14 @@ enum Commands {
         /// Read paths from text file (one per line, '#' comments)
         #[arg(short, long, value_name = "FILE")]
         from_file: Option<String>,
+
+        /// Lines per chunk file (default: config 'chunk_lines' or 500000)
+        #[arg(long, value_name = "N")]
+        chunk_lines: Option<u64>,
+
+        /// Lines buffered in RAM before a sorted run is spilled (default: config 'sort_run_lines' or 250000)
+        #[arg(long, value_name = "N")]
+        sort_run_lines: Option<u64>,
     },
 
     /// Search for text in a base (supports & | - ! parens and <globs>)
@@ -99,6 +107,8 @@ enum Commands {
     /// Known parameters:
     ///   everything_dll  - path to Everything64.dll or es.exe for whole-PC discover
     ///   confirm_delete  - ask before deleting a base (true/false, default true)
+    ///   chunk_lines     - lines per chunk when creating a base (default 500000)
+    ///   sort_run_lines  - lines buffered before spilling a sorted run (default 250000)
     #[command(verbatim_doc_comment)]
     Config {
         /// Parameter name
@@ -310,7 +320,19 @@ fn main() {
             paths,
             from_file,
             name,
-        } => logtools_app::run_create_base(paths, from_file, name, &mut presenter),
+            chunk_lines,
+            sort_run_lines,
+        } => {
+            let options = logtools_app::resolve_create_options(chunk_lines, sort_run_lines);
+
+            logtools_app::run_create_base_with_options(
+                paths,
+                from_file,
+                name,
+                options,
+                &mut presenter,
+            )
+        }
 
         Commands::Search { base_name, text } => {
             logtools_app::run_search(base_name, text, &mut presenter)

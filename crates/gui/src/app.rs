@@ -106,6 +106,8 @@ pub struct LogtoolsApp {
 
     pub cfg_everything_dll: String,
     pub cfg_confirm_delete: String,
+    pub cfg_chunk_lines: String,
+    pub cfg_sort_run_lines: String,
 }
 
 impl LogtoolsApp {
@@ -149,6 +151,8 @@ impl LogtoolsApp {
             disc_es: String::new(),
             cfg_everything_dll: String::new(),
             cfg_confirm_delete: String::new(),
+            cfg_chunk_lines: String::new(),
+            cfg_sort_run_lines: String::new(),
         };
 
         app.reload_bases();
@@ -157,6 +161,9 @@ impl LogtoolsApp {
             tools::config::get_config_param("everything_dll").unwrap_or_default();
         app.cfg_confirm_delete =
             tools::config::get_config_param("confirm_delete").unwrap_or_default();
+        app.cfg_chunk_lines = tools::config::get_config_param("chunk_lines").unwrap_or_default();
+        app.cfg_sort_run_lines =
+            tools::config::get_config_param("sort_run_lines").unwrap_or_default();
 
         app.search_base = tools::config::get_config_param("last_search_base").unwrap_or_default();
         app.search_text = tools::config::get_config_param("last_search_text").unwrap_or_default();
@@ -322,6 +329,10 @@ impl LogtoolsApp {
                         tools::config::get_config_param("everything_dll").unwrap_or_default();
                     self.cfg_confirm_delete =
                         tools::config::get_config_param("confirm_delete").unwrap_or_default();
+                    self.cfg_chunk_lines =
+                        tools::config::get_config_param("chunk_lines").unwrap_or_default();
+                    self.cfg_sort_run_lines =
+                        tools::config::get_config_param("sort_run_lines").unwrap_or_default();
                 }
             }
 

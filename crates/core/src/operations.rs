@@ -8,13 +8,48 @@ use crate::progress::ChannelProgress;
 use crate::types::{BaseInfo, CreateResult, SearchHandle, SearchResult, UpdateResult};
 use crate::storage::{read_base_config, write_base_config, BaseConfig};
 
+pub use create_base::CreateOptions;
+
+/// Create options resolved from the global config file.
+///
+/// `chunk_lines` and `sort_run_lines` can be set with
+/// `logtools config chunk_lines <N>` / `logtools config sort_run_lines <N>`.
+pub fn default_create_options() -> CreateOptions {
+    let mut options = CreateOptions::default();
+
+    if let Some(value) = tools::config::get_config_param("chunk_lines")
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+    {
+        options.chunk_lines = value;
+    }
+
+    if let Some(value) = tools::config::get_config_param("sort_run_lines")
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+    {
+        options.sort_run_lines = value;
+    }
+
+    options
+}
+
 pub fn create_base(
     paths: Vec<String>,
     name: String,
     tx: EventSender,
 ) -> AppResult<CreateResult> {
+    create_base_with_options(paths, name, default_create_options(), tx)
+}
+
+pub fn create_base_with_options(
+    paths: Vec<String>,
+    name: String,
+    options: CreateOptions,
+    tx: EventSender,
+) -> AppResult<CreateResult> {
     let progress = ChannelProgress::new(tx);
-    run_create(paths, name, &progress)
+    run_create_with_options(paths, name, options, &progress)
 }
 
 pub fn run_create<P: ProgressReporter + ?Sized>(
@@ -22,7 +57,17 @@ pub fn run_create<P: ProgressReporter + ?Sized>(
     name: String,
     progress: &P,
 ) -> AppResult<CreateResult> {
-    create_base::create_base(paths, name, progress).map_err(AppError::from)
+    run_create_with_options(paths, name, default_create_options(), progress)
+}
+
+pub fn run_create_with_options<P: ProgressReporter + ?Sized>(
+    paths: Vec<String>,
+    name: String,
+    options: CreateOptions,
+    progress: &P,
+) -> AppResult<CreateResult> {
+    create_base::create_base_with_options(paths, name, options, progress)
+        .map_err(AppError::from)
 }
 
 pub fn update_base(name: &str, tx: EventSender) -> AppResult<UpdateResult> {

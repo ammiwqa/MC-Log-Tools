@@ -228,6 +228,35 @@ pub fn run_create_base(
     name: String,
     presenter: &mut dyn Presenter,
 ) -> CommandResult {
+    let options = operations::default_create_options();
+    run_create_base_with_options(paths, from_file, name, options, presenter)
+}
+
+/// Resolves create options from optional CLI overrides plus the config file.
+pub fn resolve_create_options(
+    chunk_lines: Option<u64>,
+    sort_run_lines: Option<u64>,
+) -> operations::CreateOptions {
+    let mut options = operations::default_create_options();
+
+    if let Some(value) = chunk_lines.filter(|value| *value > 0) {
+        options.chunk_lines = value;
+    }
+
+    if let Some(value) = sort_run_lines.filter(|value| *value > 0) {
+        options.sort_run_lines = value;
+    }
+
+    options.sanitized()
+}
+
+pub fn run_create_base_with_options(
+    paths: Vec<String>,
+    from_file: Option<String>,
+    name: String,
+    options: operations::CreateOptions,
+    presenter: &mut dyn Presenter,
+) -> CommandResult {
     let mut all_paths = paths;
 
     if let Some(file_path) = from_file {
@@ -258,7 +287,8 @@ pub fn run_create_base(
     let (tx, rx) = operations::event_channel();
     let name_clone = name.clone();
 
-    let handle = std::thread::spawn(move || operations::create_base(all_paths, name_clone, tx));
+    let handle =
+        std::thread::spawn(move || operations::create_base_with_options(all_paths, name_clone, options, tx));
 
     while !handle.is_finished() {
         pump_events(&rx, presenter);
@@ -276,6 +306,14 @@ pub fn run_create_base(
                 "   Writing {} lines -> {}",
                 result.total_lines, name
             ));
+
+            if let Some(bytes) = result.peak_memory_bytes {
+                presenter.log(&format!(
+                    "   Peak RAM {:.1} MiB",
+                    bytes as f64 / (1024.0 * 1024.0)
+                ));
+            }
+
             CommandResult::Ok
         }
         Err(e) => {

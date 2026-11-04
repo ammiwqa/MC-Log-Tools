@@ -2,28 +2,36 @@
 //!
 //! A base is a sequence of zstd chunks ordered by timestamp. Chunks never
 //! overlap: `last_ts(chunk N) <= first_ts(chunk N+1)`. Each chunk holds up to
-//! `read_base_info::CHUNK_LINES` lines, but chunks that receive an out-of-order
-//! insert are allowed to grow beyond that limit instead of cascading rewrites.
+
+pub mod external_sort;
 
 use std::fs;
+use std::io;
 use std::path::Path;
 
 use progress::ProgressReporter;
-use read_base_info::{ChunkInfo, CHUNK_LINES};
+use read_base_info::{ChunkInfo, DEFAULT_CHUNK_LINES};
 
-/// Writes `logs` (already sorted by timestamp) split into chunks.
-///
-/// Chunk files are written as `<name>.<i>.zst.tmp` and renamed into place only
-/// after the whole write succeeds. Returns metadata for every written chunk.
 pub fn write_chunks<P: ProgressReporter + ?Sized>(
     name: &str,
     logs: &[(i64, String)],
     progress: &P,
 ) -> Result<Vec<ChunkInfo>, String> {
+    write_chunks_with_size(name, logs, DEFAULT_CHUNK_LINES as usize, progress)
+}
+
+pub fn write_chunks_with_size<P: ProgressReporter + ?Sized>(
+    name: &str,
+    logs: &[(i64, String)],
+    chunk_lines: usize,
+    progress: &P,
+) -> Result<Vec<ChunkInfo>, String> {
+    if chunk_lines == 0 {
+        return Err("Chunk size must be greater than zero".to_string());
+    }
+
     let dir = read_base_info::base_dir(name)?;
     fs::create_dir_all(&dir).map_err(|e| format!("Cannot create base dir: {}", e))?;
-
-    let chunk_lines = CHUNK_LINES as usize;
 
     let mut tmp_paths: Vec<std::path::PathBuf> = Vec::new();
     let mut chunks: Vec<ChunkInfo> = Vec::new();
@@ -60,8 +68,77 @@ pub fn write_chunks<P: ProgressReporter + ?Sized>(
         return Err(err);
     }
 
+    rename_chunks_into_place(&dir, &tmp_paths, &chunks)?;
+
+    Ok(chunks)
+}
+
+pub fn write_chunks_streaming<I, P>(
+    name: &str,
+    lines: I,
+    chunk_lines: usize,
+    progress: &P,
+) -> Result<Vec<ChunkInfo>, String>
+where
+    I: IntoIterator<Item = io::Result<(i64, String)>>,
+    P: ProgressReporter + ?Sized,
+{
+    if chunk_lines == 0 {
+        return Err("Chunk size must be greater than zero".to_string());
+    }
+
+    let dir = read_base_info::base_dir(name)?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Cannot create base dir: {}", e))?;
+
+    let mut tmp_paths: Vec<std::path::PathBuf> = Vec::new();
+    let mut chunks: Vec<ChunkInfo> = Vec::new();
+    let mut current: Option<CurrentChunk> = None;
+
+    let result = (|| -> Result<(), String> {
+        for line in lines {
+            let (ts, msg) = line.map_err(|e| format!("Cannot read sorted log line: {}", e))?;
+
+            if current.is_none() {
+                current = Some(CurrentChunk::create(name, chunks.len(), &dir, &mut tmp_paths)?);
+            }
+
+            let chunk = current.as_mut().unwrap();
+            chunk
+                .push(ts, &msg, progress)
+                .map_err(|e| format!("Cannot write chunk '{}': {}", chunk.file, e))?;
+
+            if chunk.lines as usize >= chunk_lines {
+                chunks.push(current.take().unwrap().finish()?);
+            }
+        }
+
+        if let Some(chunk) = current.take() {
+            chunks.push(chunk.finish()?);
+        }
+
+        Ok(())
+    })();
+
+    if let Err(err) = result {
+        for tmp in &tmp_paths {
+            let _ = fs::remove_file(tmp);
+        }
+        return Err(err);
+    }
+
+    rename_chunks_into_place(&dir, &tmp_paths, &chunks)?;
+
+    Ok(chunks)
+}
+
+fn rename_chunks_into_place(
+    dir: &Path,
+    tmp_paths: &[std::path::PathBuf],
+    chunks: &[ChunkInfo],
+) -> Result<(), String> {
     for (tmp, chunk) in tmp_paths.iter().zip(chunks.iter()) {
         let final_path = dir.join(&chunk.file);
+
         fs::rename(tmp, &final_path).map_err(|e| {
             format!(
                 "Cannot move chunk '{}' into place: {}",
@@ -71,7 +148,72 @@ pub fn write_chunks<P: ProgressReporter + ?Sized>(
         })?;
     }
 
-    Ok(chunks)
+    Ok(())
+}
+
+struct CurrentChunk {
+    file: String,
+    writer: zip_writer::ZstdLogWriter,
+    lines: u64,
+    first_ts: i64,
+    last_ts: i64,
+}
+
+impl CurrentChunk {
+    fn create(
+        name: &str,
+        index: usize,
+        dir: &Path,
+        tmp_paths: &mut Vec<std::path::PathBuf>,
+    ) -> Result<Self, String> {
+        let file = read_base_info::chunk_file_name(name, index);
+        let tmp_path = dir.join(format!("{}.tmp", file));
+
+        let writer = zip_writer::ZstdLogWriter::create(&tmp_path.to_string_lossy())
+            .map_err(|e| format!("Cannot create chunk '{}': {}", file, e))?;
+
+        tmp_paths.push(tmp_path);
+
+        Ok(Self {
+            file,
+            writer,
+            lines: 0,
+            first_ts: 0,
+            last_ts: 0,
+        })
+    }
+
+    fn push<P: ProgressReporter + ?Sized>(
+        &mut self,
+        ts: i64,
+        msg: &str,
+        progress: &P,
+    ) -> io::Result<()> {
+        self.writer.write_line(ts, msg)?;
+
+        if self.lines == 0 {
+            self.first_ts = ts;
+        }
+
+        self.lines += 1;
+        self.last_ts = ts;
+        progress.inc(1);
+
+        Ok(())
+    }
+
+    fn finish(self) -> Result<ChunkInfo, String> {
+        self.writer
+            .finish()
+            .map_err(|e| format!("Cannot finish chunk '{}': {}", self.file, e))?;
+
+        Ok(ChunkInfo {
+            file: self.file,
+            lines: self.lines,
+            first_ts: self.first_ts,
+            last_ts: self.last_ts,
+        })
+    }
 }
 
 pub fn read_chunk(path: &str) -> std::io::Result<Vec<(i64, String)>> {
@@ -140,6 +282,15 @@ pub fn merge_into_chunks<P: ProgressReporter + ?Sized>(
 ) -> Result<Vec<ChunkInfo>, String> {
     if new_logs.is_empty() {
         return Ok(chunks.to_vec());
+    }
+
+    if chunks.is_empty() {
+        return write_chunks_with_size(
+            name,
+            new_logs,
+            DEFAULT_CHUNK_LINES as usize,
+            progress,
+        );
     }
 
     let mut sorted_new: Vec<(i64, String)> = new_logs.to_vec();
@@ -248,4 +399,53 @@ fn prune_empty_tail(
     }
 
     Ok(chunks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chunk(file: &str, first_ts: i64, last_ts: i64) -> ChunkInfo {
+        ChunkInfo { file: file.to_string(), lines: 1, first_ts, last_ts }
+    }
+
+    #[test]
+    fn find_chunk_empty_returns_zero() {
+        let chunks: Vec<ChunkInfo> = Vec::new();
+        assert_eq!(find_chunk(&chunks, 100), 0);
+    }
+
+    #[test]
+    fn find_chunk_before_first_returns_zero() {
+        let chunks = vec![chunk("a.0.zst", 100, 200), chunk("a.1.zst", 300, 400)];
+        assert_eq!(find_chunk(&chunks, 50), 0);
+        assert_eq!(find_chunk(&chunks, 100), 0); // boundary goes to earlier chunk
+    }
+
+    #[test]
+    fn find_chunk_within_range() {
+        let chunks = vec![
+            chunk("a.0.zst", 0, 100),
+            chunk("a.1.zst", 101, 200),
+            chunk("a.2.zst", 201, 300),
+        ];
+        assert_eq!(find_chunk(&chunks, 150), 1);
+        assert_eq!(find_chunk(&chunks, 250), 2);
+    }
+
+    #[test]
+    fn find_chunk_after_last_returns_last_index() {
+        let chunks = vec![chunk("a.0.zst", 0, 100)];
+        assert_eq!(find_chunk(&chunks, 999), 0);
+    }
+
+    #[test]
+    fn find_chunk_boundary_goes_to_earlier_chunk() {
+        let chunks = vec![
+            chunk("a.0.zst", 0, 100),
+            chunk("a.1.zst", 101, 200),
+        ];
+        // ts == last_ts of chunk 0 and first_ts - 1 of chunk 1 -> chunk 0
+        assert_eq!(find_chunk(&chunks, 100), 0);
+    }
 }

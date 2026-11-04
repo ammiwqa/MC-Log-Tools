@@ -113,7 +113,7 @@ pub struct ChunkInfo {
     pub last_ts: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaseConfig {
     #[serde(default)]
     pub name: String,
@@ -132,10 +132,33 @@ pub struct BaseConfig {
     /// Chunked storage layout. Empty for legacy bases that use a single `<name>.zst`.
     #[serde(default)]
     pub chunks: Vec<ChunkInfo>,
+    /// Number of log lines per chunk used when this base was created.
+    #[serde(default = "default_chunk_lines")]
+    pub chunk_lines: u64,
+}
+
+impl Default for BaseConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            lines: 0,
+            hash: String::new(),
+            tags: Vec::new(),
+            custom: default_custom(),
+            time: TimeInfo::default(),
+            paths: Vec::new(),
+            chunks: Vec::new(),
+            chunk_lines: DEFAULT_CHUNK_LINES,
+        }
+    }
 }
 
 fn default_custom() -> String {
     "custom".to_string()
+}
+
+fn default_chunk_lines() -> u64 {
+    DEFAULT_CHUNK_LINES
 }
 
 fn de_path_entry_vec<'de, D>(d: D) -> Result<Vec<PathEntry>, D::Error>
@@ -255,7 +278,14 @@ pub fn get_chunk_path(name: &str, index: usize) -> Result<String, String> {
     Ok(path.to_string_lossy().to_string())
 }
 
-pub const CHUNK_LINES: u64 = 500_000;
+/// Default number of log lines per chunk.
+pub const DEFAULT_CHUNK_LINES: u64 = 500_000;
+
+/// Default number of lines kept in memory before a sorted run is spilled to disk.
+pub const DEFAULT_SORT_RUN_LINES: u64 = 250_000;
+
+/// Legacy alias kept for callers that only need the default chunk size.
+pub const CHUNK_LINES: u64 = DEFAULT_CHUNK_LINES;
 
 pub fn chunk_files(name: &str, cfg: &BaseConfig) -> Result<Vec<(String, i64, i64)>, String> {
     let dir = base_dir(name)?;

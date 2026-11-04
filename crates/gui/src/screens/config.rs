@@ -17,6 +17,30 @@ pub fn render(ui: &mut egui::Ui, app: &mut LogtoolsApp) {
 
         ui.add_space(8.0);
 
+        theme::section_label(ui, "chunk_lines");
+
+        ui.add(
+            egui::TextEdit::singleline(&mut app.cfg_chunk_lines)
+                .desired_width(ui.available_width())
+                .hint_text("lines per chunk (default 500000)"),
+        );
+
+        ui.add_space(8.0);
+
+        theme::section_label(ui, "sort_run_lines");
+
+        ui.add(
+            egui::TextEdit::singleline(&mut app.cfg_sort_run_lines)
+                .desired_width(ui.available_width())
+                .hint_text("in-memory sort buffer (default 250000)"),
+        );
+
+        ui.label(theme::muted(
+            "Lower sort_run_lines uses less RAM; higher may be faster for small bases.",
+        ));
+
+        ui.add_space(8.0);
+
         theme::section_label(ui, "confirm_delete");
 
         ui.add(
@@ -35,6 +59,14 @@ pub fn render(ui: &mut egui::Ui, app: &mut LogtoolsApp) {
                 (
                     "confirm_delete".to_string(),
                     app.cfg_confirm_delete.trim().to_string(),
+                ),
+                (
+                    "chunk_lines".to_string(),
+                    app.cfg_chunk_lines.trim().to_string(),
+                ),
+                (
+                    "sort_run_lines".to_string(),
+                    app.cfg_sort_run_lines.trim().to_string(),
                 ),
             ];
 
