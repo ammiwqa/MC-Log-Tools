@@ -59,7 +59,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut LogtoolsApp) {
         }
     });
 
-    let preview = app.search_preview.clone();
+    let preview = app.discover_preview.clone();
 
     if !preview.is_empty() {
         ui.add_space(8.0);
@@ -76,7 +76,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut LogtoolsApp) {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add(theme::ghost_button("Open results file")).clicked() {
-                    app.open_results_file();
+                    app.open_discover_results_file();
                 }
             });
         });

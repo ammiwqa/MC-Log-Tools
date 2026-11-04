@@ -82,6 +82,9 @@ pub struct LogtoolsApp {
     pub search_preview: Vec<String>,
     pub search_results: Vec<(u64, String)>,
 
+    pub discover_preview: Vec<String>,
+    pub discover_results_path: Option<String>,
+
     pub search_results_window: Option<Arc<Mutex<SearchResultsWindowState>>>,
 
     pub create_modal_open: bool,
@@ -127,6 +130,8 @@ impl LogtoolsApp {
             results_path: None,
             search_preview: Vec::new(),
             search_results: Vec::new(),
+            discover_preview: Vec::new(),
+            discover_results_path: None,
             search_results_window: None,
             create_modal_open: false,
             create_name: String::new(),
@@ -229,11 +234,30 @@ impl LogtoolsApp {
         self.progress = None;
         self.message = None;
         self.log_lines.clear();
-        self.search_preview.clear();
-        self.search_results.clear();
-        self.results_path = None;
         self.last_error = None;
-        self.search_results_window = None;
+
+        // Clear only the output that belongs to the command being started, so search
+        // results never leak into the Discover screen (and vice versa).
+        match kind {
+            CmdKind::Search => {
+                self.search_preview.clear();
+                self.search_results.clear();
+                self.results_path = None;
+                self.search_results_window = None;
+            }
+            CmdKind::Discover => {
+                self.discover_preview.clear();
+                self.discover_results_path = None;
+            }
+            _ => {
+                self.search_preview.clear();
+                self.search_results.clear();
+                self.results_path = None;
+                self.search_results_window = None;
+                self.discover_preview.clear();
+                self.discover_results_path = None;
+            }
+        }
     }
 
     pub fn pump_events(&mut self) {
@@ -243,7 +267,12 @@ impl LogtoolsApp {
                 PresenterEvent::Message(msg) => self.message = Some(msg),
                 PresenterEvent::Log(line) => {
                     if let Some(path) = line.trim_start().strip_prefix("Results file: ") {
-                        self.results_path = Some(path.to_string());
+                        match self.worker.as_ref().map(|(kind, _)| *kind) {
+                            Some(CmdKind::Discover) => {
+                                self.discover_results_path = Some(path.to_string());
+                            }
+                            _ => self.results_path = Some(path.to_string()),
+                        }
                     } else {
                         self.log_lines.push(line);
                     }
@@ -287,7 +316,7 @@ impl LogtoolsApp {
                             self.results_path.clone(),
                         ))));
                 }
-                CmdKind::Discover => self.load_search_preview(),
+                CmdKind::Discover => self.load_discover_preview(),
                 CmdKind::ConfigParams => {
                     self.cfg_everything_dll =
                         tools::config::get_config_param("everything_dll").unwrap_or_default();
@@ -312,6 +341,16 @@ impl LogtoolsApp {
         if let Some(path) = &self.results_path {
             if let Ok(content) = std::fs::read_to_string(path) {
                 self.search_preview = content.lines().take(100).map(String::from).collect();
+            }
+        }
+    }
+
+    pub fn load_discover_preview(&mut self) {
+        self.discover_preview.clear();
+
+        if let Some(path) = &self.discover_results_path {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                self.discover_preview = content.lines().take(100).map(String::from).collect();
             }
         }
     }
@@ -353,6 +392,12 @@ impl LogtoolsApp {
 
     pub fn open_results_file(&self) {
         if let Some(path) = &self.results_path {
+            crate::theme::open_in_system_app(Path::new(path));
+        }
+    }
+
+    pub fn open_discover_results_file(&self) {
+        if let Some(path) = &self.discover_results_path {
             crate::theme::open_in_system_app(Path::new(path));
         }
     }
