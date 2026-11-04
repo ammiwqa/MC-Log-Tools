@@ -242,9 +242,9 @@ fn worker(
                 }
             }
 
-            let text = line[13..].to_lowercase();
+            let text = &line[13..];
 
-            if matches(&expr, &text) {
+            if matches(&expr, text) {
                 out.push((unix, line));
             }
 

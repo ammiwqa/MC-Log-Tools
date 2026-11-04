@@ -1,5 +1,3 @@
-
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -13,7 +11,6 @@ pub use lt_core::types::BaseInfo;
 // =========================
 // PRESENTER
 // =========================
-
 
 pub trait Presenter {
     fn progress(&mut self, pos: u64, total: u64);
@@ -375,11 +372,11 @@ pub fn run_search_date_range(
     }
 
     presenter.progress(write_total, write_total);
-    presenter.log(&format!("Results file: {}", exit_file_path));
     presenter.log(&format!(
         "   Writing {} founds -> ({})",
         results_len, exit_file_path
     ));
+    presenter.log(&format!("   Results file: {}", exit_file_path));
 
     let path = PathBuf::from(&exit_file_path);
     presenter.search_completed(&path);
@@ -393,8 +390,7 @@ pub fn read_context_around(
     n_before: usize,
     n_after: usize,
 ) -> Result<Vec<(i64, String)>, String> {
-    operations::read_context_around(name, target_ts, n_before, n_after)
-        .map_err(|e| e.to_string())
+    operations::read_context_around(name, target_ts, n_before, n_after).map_err(|e| e.to_string())
 }
 
 pub fn run_update_base(name: String, presenter: &mut dyn Presenter) -> CommandResult {
@@ -588,7 +584,20 @@ pub fn run_discover(
     }
 
     let found = match discovery_result {
-        Some(dirs) => dirs,
+        Some(mut dirs) => {
+            if let Some(root_str) = root {
+                if !root_str.trim().is_empty() {
+                    let root = PathBuf::from(&root_str);
+                    if root.is_dir() {
+                        dirs.retain(|d| {
+                            let dir = PathBuf::from(d);
+                            dir.starts_with(&root) || dir == root
+                        });
+                    }
+                }
+            }
+            dirs
+        }
 
         None => {
             let scan_root = match root {
@@ -633,7 +642,7 @@ pub fn run_discover(
         start.elapsed().as_secs_f32()
     ));
 
-    presenter.log(&format!("Results file: {}", out_path));
+    presenter.log(&format!("   Results file: {}", out_path));
     presenter.log(&format!(
         "   Create a global base: logtools cb <NAME> --from-file \"{}\"",
         out_path

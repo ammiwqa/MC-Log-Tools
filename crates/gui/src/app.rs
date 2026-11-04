@@ -242,7 +242,7 @@ impl LogtoolsApp {
                 PresenterEvent::Progress { pos, total } => self.progress = Some((pos, total)),
                 PresenterEvent::Message(msg) => self.message = Some(msg),
                 PresenterEvent::Log(line) => {
-                    if let Some(path) = line.strip_prefix("Results file: ") {
+                    if let Some(path) = line.trim_start().strip_prefix("Results file: ") {
                         self.results_path = Some(path.to_string());
                     } else {
                         self.log_lines.push(line);

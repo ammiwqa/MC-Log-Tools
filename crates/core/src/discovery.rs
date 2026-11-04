@@ -89,7 +89,6 @@ pub fn find_es(explicit: Option<&String>) -> Option<String> {
         if Path::new(p).is_file() {
             return Some(p.clone());
         }
-        return None;
     }
 
     if let Ok(out) = std::process::Command::new("where").arg("es.exe").output() {

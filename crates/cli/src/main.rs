@@ -127,13 +127,35 @@ enum Commands {
 // CONSOLE PRESENTER
 // =========================
 
+
+/// Green cli wordws.
+const OPERATION_WORDS: &[&str] = &[
+    "Searching",
+    "Writing",
+    "Parsing",
+    "Scanning",
+    "Discovered",
+    "Updating",
+    "Update",
+    "Dedup",
+    "Discovery",
+    "Checking",
+    "Hashing",
+    "Merging",
+    "Creating",
+    "Config",
+    "Deleted",
+    "Cancelled",
+];
+
 struct ConsolePresenter {
     bar: Option<ProgressBar>,
+    last_message: Option<String>,
 }
 
 impl ConsolePresenter {
     fn new() -> Self {
-        Self { bar: None }
+        Self { bar: None, last_message: None }
     }
 
     fn make_bar() -> ProgressBar {
@@ -142,7 +164,10 @@ impl ConsolePresenter {
         pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(50));
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("   {prefix} [{bar:30.white/white}] {pos}/{len} [{elapsed_precise}]")
+                // Current operation is green, the rest of the bar is white.
+                .template(
+                    "   {prefix:.green} [{bar:30.white/white}] {pos:.white}/{len:.white} [{elapsed_precise:.white}]",
+                )
                 .unwrap()
                 .progress_chars("=>-"),
         );
@@ -150,6 +175,31 @@ impl ConsolePresenter {
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
         pb
     }
+
+    /// Highlights the operation name at the start of a summary line:
+    /// `Searching 10133828 lines -> 83623 founds`
+    /// (green "Searching", white everything else).
+    fn colorize_operation_line(line: &str) -> String {
+        let trimmed = line.trim_start();
+        let indent_len = line.len() - trimmed.len();
+
+        let (word, rest) = match trimmed.find(char::is_whitespace) {
+            Some(idx) => (&trimmed[..idx], &trimmed[idx..]),
+            None => (trimmed, ""),
+        };
+
+        if !OPERATION_WORDS.contains(&word) {
+            return line.to_string();
+        }
+
+        format!(
+            "{}{}{}",
+            " ".repeat(indent_len),
+            console::style(word).green(),
+            console::style(rest).white(),
+        )
+    }
+
     fn finish_bar(&mut self) {
         if let Some(pb) = self.bar.take() {
             pb.finish_and_clear();
@@ -165,15 +215,24 @@ impl Presenter for ConsolePresenter {
 
         pb.set_length(total);
         pb.set_position(pos);
+
+        // Set prefix from last_message if the bar was just created and prefix not yet set
+        if self.last_message.is_some() && pb.prefix().is_empty() {
+            pb.set_prefix(self.last_message.take().unwrap());
+        }
     }
 
     fn message(&mut self, msg: &str) {
+        self.last_message = Some(msg.to_string());
+
         if let Some(pb) = &mut self.bar {
             pb.set_prefix(msg.to_string());
         }
     }
 
     fn log(&mut self, line: &str) {
+        let line = Self::colorize_operation_line(line);
+
         if let Some(pb) = &self.bar {
             pb.suspend(|| {
                 println!("{}", line);
