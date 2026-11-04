@@ -5,7 +5,7 @@ use std::thread::JoinHandle;
 
 use eframe::egui;
 use logtools_app::CommandResult;
-use read_base_info::BaseInfo;
+use logtools_app::BaseInfo;
 
 use crate::presenter::{EguiPresenter, PresenterEvent};
 use crate::results_window::SearchResultsWindowState;
@@ -160,7 +160,7 @@ impl LogtoolsApp {
     }
 
     pub fn reload_bases(&mut self) {
-        self.bases = read_base_info::list_bases().unwrap_or_default();
+        self.bases = logtools_app::operations::list_bases().unwrap_or_default();
     }
 
     pub fn spawn_command(&mut self, kind: CmdKind, cmd: GuiCommand) {
@@ -179,14 +179,14 @@ impl LogtoolsApp {
                     name,
                     paths,
                     from_file,
-                } => logtools_app::run_create_base(paths, from_file, name, &mut presenter),
+                } => crate::commands::run_create_base(paths, from_file, name, &mut presenter),
                 GuiCommand::Search {
                     base,
                     text,
                     date_from,
                     date_to,
                     use_date_filtering,
-                } => logtools_app::run_search_date_range(
+                } => crate::commands::run_search(
                     base,
                     text,
                     date_from,
@@ -195,17 +195,17 @@ impl LogtoolsApp {
                     &mut presenter,
                 ),
                 GuiCommand::UpdateBase { name } => {
-                    logtools_app::run_update_base(name, &mut presenter)
+                    crate::commands::run_update_base(name, &mut presenter)
                 }
                 GuiCommand::Delete { name, force_yes } => {
-                    logtools_app::run_delete(name, force_yes, &mut presenter)
+                    crate::commands::run_delete(name, force_yes, &mut presenter)
                 }
                 GuiCommand::Discover {
                     root,
                     out,
                     es,
                     no_everything,
-                } => logtools_app::run_discover(root, out, es, no_everything, &mut presenter),
+                } => crate::commands::run_discover(root, out, es, no_everything, &mut presenter),
                 GuiCommand::ConfigParams { params } => {
                     let mut result = CommandResult::Ok;
 
@@ -341,7 +341,7 @@ impl LogtoolsApp {
     }
 
     pub fn base_date_bounds(&self) -> (Option<i64>, Option<i64>) {
-        read_base_info::load_log(&self.search_base)
+        logtools_app::operations::load_log(&self.search_base)
             .ok()
             .and_then(|cfg| {
                 let f = cfg.time.fld_unix.parse::<i64>().ok();

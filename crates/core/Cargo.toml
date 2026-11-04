@@ -14,3 +14,7 @@ update_base = { path = "../base/update_base" }
 search = { path = "../base/search_base/search" }
 log_parser = { path = "../base/create_base/log_parser" }
 tools = { path = "../tools" }
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0"
+zstd = "0.13"

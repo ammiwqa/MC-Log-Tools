@@ -10,6 +10,7 @@
 //! - `results_window.rs` — окно результатов поиска
 
 mod app;
+mod commands;
 mod presenter;
 mod results_window;
 mod screens;

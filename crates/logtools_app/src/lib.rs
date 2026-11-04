@@ -7,8 +7,8 @@ use std::time::Duration;
 use lt_core::AppError;
 use lt_core::discovery::{self, DiscoverSource};
 use lt_core::events::CoreEvent;
-use lt_core::operations;
-use read_base_info::BaseInfo;
+pub use lt_core::operations;
+pub use lt_core::types::BaseInfo;
 
 // =========================
 // PRESENTER
@@ -394,6 +394,7 @@ pub fn read_context_around(
     n_after: usize,
 ) -> Result<Vec<(i64, String)>, String> {
     operations::read_context_around(name, target_ts, n_before, n_after)
+        .map_err(|e| e.to_string())
 }
 
 pub fn run_update_base(name: String, presenter: &mut dyn Presenter) -> CommandResult {
@@ -457,7 +458,7 @@ pub fn run_update_base(name: String, presenter: &mut dyn Presenter) -> CommandRe
 }
 
 pub fn run_list_bases(presenter: &mut dyn Presenter) -> CommandResult {
-    match read_base_info::list_bases() {
+    match operations::list_bases() {
         Ok(bases) => {
             presenter.log(&format_bases_table(&bases));
             CommandResult::Ok
@@ -542,7 +543,7 @@ pub fn run_delete(name: String, force_yes: bool, presenter: &mut dyn Presenter) 
         }
     }
 
-    match read_base_info::delete_base(&name) {
+    match operations::delete_base(&name) {
         Ok(()) => {
             presenter.log(&format!("   Deleted {}", name));
             CommandResult::Ok
