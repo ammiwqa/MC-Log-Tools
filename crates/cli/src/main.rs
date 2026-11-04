@@ -97,7 +97,7 @@ enum Commands {
     ///   logtools config
     ///
     /// Known parameters:
-    ///   everything_dll  - path to Everything64.dll for whole-PC discover
+    ///   everything_dll  - path to Everything64.dll or es.exe for whole-PC discover
     ///   confirm_delete  - ask before deleting a base (true/false, default true)
     #[command(verbatim_doc_comment)]
     Config {

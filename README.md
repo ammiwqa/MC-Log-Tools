@@ -198,7 +198,7 @@ logtools config <OPTION> <VARIABLE>
 ```
 
 #### Avaliable config options:
- + ```everything_dll``` - path to [Everything64.dll](#Everything-1)
+ + ```everything_dll``` - path to [Everything64.dll](#everything-1) or [es.exe](#everything-1)
  + ```confirm_delete``` - deletion confirmation (```true```/```false```)   [```true``` by default]
 
 <br> Display all avaliable options:

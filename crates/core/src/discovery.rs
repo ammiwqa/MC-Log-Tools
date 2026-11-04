@@ -84,10 +84,39 @@ pub fn discover_walk(root: &Path) -> Vec<String> {
 // Everything CLI ...
 // =========================
 
-pub fn find_es(explicit: Option<&String>) -> Option<String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EverythingBinary {
+    Dll,
+    Exe,
+}
+
+fn classify_binary(path: &str) -> Option<EverythingBinary> {
+    match Path::new(path).extension().and_then(|e| e.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("dll") => Some(EverythingBinary::Dll),
+        Some(ext) if ext.eq_ignore_ascii_case("exe") => Some(EverythingBinary::Exe),
+        _ => None,
+    }
+}
+
+fn push_unique<T: PartialEq>(items: &mut Vec<T>, value: T) {
+    if !items.contains(&value) {
+        items.push(value);
+    }
+}
+
+fn es_candidates(explicit: Option<&String>) -> Vec<String> {
+    let mut candidates: Vec<String> = Vec::new();
+
     if let Some(p) = explicit {
-        if Path::new(p).is_file() {
-            return Some(p.clone());
+        if classify_binary(p) != Some(EverythingBinary::Dll) {
+            push_unique(&mut candidates, p.clone());
+        }
+    }
+
+    if let Some(configured) = tools::config::get_config_param("everything_dll") {
+        let configured = configured.trim();
+        if !configured.is_empty() && classify_binary(configured) != Some(EverythingBinary::Dll) {
+            push_unique(&mut candidates, configured.to_string());
         }
     }
 
@@ -96,19 +125,24 @@ pub fn find_es(explicit: Option<&String>) -> Option<String> {
             if let Some(first) = String::from_utf8_lossy(&out.stdout).lines().next() {
                 let p = first.trim();
                 if !p.is_empty() {
-                    return Some(p.to_string());
+                    push_unique(&mut candidates, p.to_string());
                 }
             }
         }
     }
 
-    for candidate in ["C:\\Program Files\\Everything\\es.exe"] {
-        if Path::new(candidate).is_file() {
-            return Some(candidate.to_string());
-        }
-    }
+    push_unique(
+        &mut candidates,
+        "C:\\Program Files\\Everything\\es.exe".to_string(),
+    );
 
-    None
+    candidates
+}
+
+pub fn find_es(explicit: Option<&String>) -> Option<String> {
+    es_candidates(explicit)
+        .into_iter()
+        .find(|p| Path::new(p).is_file())
 }
 
 fn dirs_from_paths<I: IntoIterator<Item = String>>(paths: I) -> Vec<String> {
@@ -248,30 +282,42 @@ pub mod everything_sdk {
         }
     }
 
-    pub fn find_dll(explicit: Option<&String>) -> Option<PathBuf> {
+    pub fn dll_candidates(explicit: Option<&String>) -> Vec<PathBuf> {
         let mut candidates: Vec<PathBuf> = Vec::new();
 
-        if let Some(configured) = tools::config::get_config_param("everything_dll") {
-            if !configured.trim().is_empty() {
-                candidates.push(PathBuf::from(configured));
+        if let Some(p) = explicit {
+            if super::classify_binary(p) != Some(super::EverythingBinary::Exe) {
+                super::push_unique(&mut candidates, PathBuf::from(p));
             }
         }
 
-        if let Some(p) = explicit {
-            candidates.push(PathBuf::from(p));
+        if let Some(configured) = tools::config::get_config_param("everything_dll") {
+            let configured = configured.trim();
+            if !configured.is_empty()
+                && super::classify_binary(configured) != Some(super::EverythingBinary::Exe)
+            {
+                super::push_unique(&mut candidates, PathBuf::from(configured));
+            }
         }
 
         if let Ok(exe) = std::env::current_exe() {
             if let Some(dir) = exe.parent() {
-                candidates.push(dir.join("Everything64.dll"));
+                super::push_unique(&mut candidates, dir.join("Everything64.dll"));
             }
         }
 
-        candidates.push(PathBuf::from(
-            r"C:\Program Files\Everything\Everything64.dll",
-        ));
+        super::push_unique(
+            &mut candidates,
+            PathBuf::from(r"C:\Program Files\Everything\Everything64.dll"),
+        );
 
-        candidates.into_iter().find(|p| p.is_file())
+        candidates
+    }
+
+    pub fn find_dll(explicit: Option<&String>) -> Option<PathBuf> {
+        dll_candidates(explicit)
+            .into_iter()
+            .find(|p| p.is_file())
     }
 }
 
@@ -299,9 +345,78 @@ pub struct Discovery {
 }
 
 pub fn discover_everything(es_arg: Option<&String>) -> Result<Discovery, String> {
+    let mut errors: Vec<String> = Vec::new();
+
+    if let Some(explicit) = es_arg {
+        if !Path::new(explicit).is_file() {
+            errors.push(format!("Everything path not found: {}", explicit));
+        } else {
+            match classify_binary(explicit) {
+                Some(EverythingBinary::Exe) => match discover_es(explicit) {
+                    Ok(dirs) => {
+                        return Ok(Discovery {
+                            dirs,
+                            source: DiscoverSource::Cli,
+                        });
+                    }
+                    Err(e) => errors.push(format!("es.exe ({}) failed: {}", explicit, e)),
+                },
+
+                #[cfg(windows)]
+                Some(EverythingBinary::Dll) => match discover_sdk(Path::new(explicit)) {
+                    Ok(dirs) => {
+                        return Ok(Discovery {
+                            dirs,
+                            source: DiscoverSource::Sdk,
+                        });
+                    }
+                    Err(e) => {
+                        errors.push(format!("Everything SDK ({}) failed: {}", explicit, e));
+                    }
+                },
+
+                #[cfg(not(windows))]
+                Some(EverythingBinary::Dll) => {
+                    errors.push(format!(
+                        "Everything SDK is only available on Windows: {}",
+                        explicit
+                    ));
+                }
+
+                None => {
+                    #[cfg(windows)]
+                    match discover_sdk(Path::new(explicit)) {
+                        Ok(dirs) => {
+                            return Ok(Discovery {
+                                dirs,
+                                source: DiscoverSource::Sdk,
+                            });
+                        }
+                        Err(e) => {
+                            errors.push(format!("Everything SDK ({}) failed: {}", explicit, e));
+                        }
+                    }
+
+                    match discover_es(explicit) {
+                        Ok(dirs) => {
+                            return Ok(Discovery {
+                                dirs,
+                                source: DiscoverSource::Cli,
+                            });
+                        }
+                        Err(e) => errors.push(format!("es.exe ({}) failed: {}", explicit, e)),
+                    }
+                }
+            }
+        }
+    }
+
     #[cfg(windows)]
     {
-        if let Some(dll) = everything_sdk::find_dll(es_arg) {
+        for dll in everything_sdk::dll_candidates(None)
+            .into_iter()
+            .filter(|p| p.is_file())
+        {
             match discover_sdk(&dll) {
                 Ok(dirs) => {
                     return Ok(Discovery {
@@ -309,12 +424,16 @@ pub fn discover_everything(es_arg: Option<&String>) -> Result<Discovery, String>
                         source: DiscoverSource::Sdk,
                     });
                 }
-                Err(e) => return Err(format!("Everything SDK ({}) failed: {}", dll.display(), e)),
+                Err(e) => errors.push(format!(
+                    "Everything SDK ({}) failed: {}",
+                    dll.display(),
+                    e
+                )),
             }
         }
     }
 
-    if let Some(es_path) = find_es(es_arg) {
+    if let Some(es_path) = find_es(None) {
         match discover_es(&es_path) {
             Ok(dirs) => {
                 return Ok(Discovery {
@@ -322,9 +441,13 @@ pub fn discover_everything(es_arg: Option<&String>) -> Result<Discovery, String>
                     source: DiscoverSource::Cli,
                 });
             }
-            Err(e) => return Err(format!("es.exe ({}) failed: {}", es_path, e)),
+            Err(e) => errors.push(format!("es.exe ({}) failed: {}", es_path, e)),
         }
     }
 
-    Err("Everything is not available".to_string())
+    if errors.is_empty() {
+        Err("Everything is not available".to_string())
+    } else {
+        Err(errors.join("; "))
+    }
 }

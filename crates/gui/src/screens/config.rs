@@ -13,6 +13,8 @@ pub fn render(ui: &mut egui::Ui, app: &mut LogtoolsApp) {
                 .desired_width(ui.available_width()),
         );
 
+        ui.label(theme::muted("Path to Everything64.dll or es.exe"));
+
         ui.add_space(8.0);
 
         theme::section_label(ui, "confirm_delete");

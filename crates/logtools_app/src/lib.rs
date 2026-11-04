@@ -579,7 +579,11 @@ pub fn run_discover(
                 presenter.log(&format!("   Scanning {}", source_str));
                 discovery_result = Some(d.dirs);
             }
-            Err(_e) => {}
+            Err(e) => {
+                if es.is_some() {
+                    presenter.log(&format!("   Everything unavailable: {}", e));
+                }
+            }
         }
     }
 
@@ -621,7 +625,7 @@ pub fn run_discover(
 
             if !no_everything {
                 presenter.log(
-                    "   Tip: install Everything (https://www.voidtools.com/) and Everything SDK for an instant whole-PC scan.\n   Then set the DLL path: logtools config everything_dll \"<path to Everything64.dll>\"",
+                    "   Tip: install Everything (https://www.voidtools.com/) and Everything SDK for an instant whole-PC scan.\n   Then set the DLL or es.exe path: logtools config everything_dll \"<path to Everything64.dll or es.exe>\"",
                 );
             }
 
