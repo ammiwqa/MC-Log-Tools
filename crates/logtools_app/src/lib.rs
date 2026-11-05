@@ -525,22 +525,60 @@ pub fn run_config(
                     ));
                 }
             }
+
+            let state = tools::state::load_state();
+
+            if !state.is_empty() {
+                presenter.log("");
+                presenter.log("App state (not a config):");
+
+                for (k, v) in &state {
+                    presenter.log(&format!(
+                        "{:<20} {}",
+                        k,
+                        v.as_str().unwrap_or(&v.to_string())
+                    ));
+                }
+            }
+
             CommandResult::Ok
         }
 
-        (Some(param), None) => match tools::config::get_config_param(&param) {
-            Some(value) => {
-                presenter.log(&value);
-                CommandResult::Ok
+        (Some(param), None) => {
+            let value = if tools::state::is_state_param(&param) {
+                tools::state::get_state_param(&param)
+            } else {
+                tools::config::get_config_param(&param)
+            };
+
+            match value {
+                Some(value) => {
+                    presenter.log(&value);
+                    CommandResult::Ok
+                }
+                None => {
+                    let msg = format!("Parameter '{}' is not set", param);
+                    presenter.error(&msg);
+                    CommandResult::Err(msg)
+                }
             }
-            None => {
-                let msg = format!("Parameter '{}' is not set", param);
-                presenter.error(&msg);
-                CommandResult::Err(msg)
-            }
-        },
+        }
 
         (Some(param), Some(var)) => {
+            if tools::state::is_state_param(&param) {
+                return match tools::state::save_state_param(&param, var.trim()) {
+                    Ok(()) => {
+                        presenter.log(&format!("   State {} -> \"{}\"", param, var.trim()));
+                        CommandResult::Ok
+                    }
+                    Err(e) => {
+                        let msg = format!("Error saving state: {}", e);
+                        presenter.error(&msg);
+                        CommandResult::ExitCode(1)
+                    }
+                };
+            }
+
             let mut map = tools::config::load_config();
 
             map.insert(
@@ -555,6 +593,58 @@ pub fn run_config(
                 }
                 Err(e) => {
                     let msg = format!("Error saving config: {}", e);
+                    presenter.error(&msg);
+                    CommandResult::ExitCode(1)
+                }
+            }
+        }
+    }
+}
+
+pub fn run_state(
+    param: Option<String>,
+    var: Option<String>,
+    presenter: &mut dyn Presenter,
+) -> CommandResult {
+    match (param, var) {
+        (None, _) => {
+            let state = tools::state::load_state();
+
+            if state.is_empty() {
+                presenter.log("No app state stored.");
+            } else {
+                for (k, v) in &state {
+                    presenter.log(&format!(
+                        "{:<20} {}",
+                        k,
+                        v.as_str().unwrap_or(&v.to_string())
+                    ));
+                }
+            }
+
+            CommandResult::Ok
+        }
+
+        (Some(param), None) => match tools::state::get_state_param(&param) {
+            Some(value) => {
+                presenter.log(&value);
+                CommandResult::Ok
+            }
+            None => {
+                let msg = format!("State parameter '{}' is not set", param);
+                presenter.error(&msg);
+                CommandResult::Err(msg)
+            }
+        },
+
+        (Some(param), Some(var)) => {
+            match tools::state::save_state_param(&param, var.trim()) {
+                Ok(()) => {
+                    presenter.log(&format!("   State {} -> \"{}\"", param, var.trim()));
+                    CommandResult::Ok
+                }
+                Err(e) => {
+                    let msg = format!("Error saving state: {}", e);
                     presenter.error(&msg);
                     CommandResult::ExitCode(1)
                 }

@@ -6,6 +6,8 @@ use std::env;
 use std::path::PathBuf;
 
 pub mod config;
+pub mod paths;
+pub mod state;
 
 #[derive(Error, Debug, PartialEq)]
 pub enum FilenameError {

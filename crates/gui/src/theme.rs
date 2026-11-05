@@ -21,6 +21,8 @@ pub const GREEN: egui::Color32 = egui::Color32::from_rgb(0x0F, 0xDB, 0x92);
 pub const GREEN_DIM: egui::Color32 = egui::Color32::from_rgb(0x0B, 0x93, 0x66);
 pub const ON_GREEN: egui::Color32 = egui::Color32::from_rgb(0x05, 0x0D, 0x0A);
 
+pub const BLUE: egui::Color32 = egui::Color32::from_rgb(0x4D, 0xA3, 0xFF);
+
 pub const LOG_KEYWORD: egui::Color32 = egui::Color32::from_rgb(0x22, 0xAF, 0x77);
 
 pub const RED: egui::Color32 = egui::Color32::from_rgb(0xEC, 0x6A, 0x88);

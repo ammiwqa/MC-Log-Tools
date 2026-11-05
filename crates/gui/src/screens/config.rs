@@ -101,4 +101,32 @@ pub fn render(ui: &mut egui::Ui, app: &mut LogtoolsApp) {
             });
         }
     }
+
+    ui.add_space(8.0);
+    ui.separator();
+
+    theme::section_label(ui, "APP STATE");
+    ui.label(theme::muted(
+        "Internal memory of the app (not a config, edited automatically).",
+    ));
+
+    let state = tools::state::load_state();
+
+    if state.is_empty() {
+        ui.label(theme::muted("No app state stored."));
+    } else {
+        for (k, v) in &state {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{:<20}", k))
+                        .monospace()
+                        .color(theme::BLUE),
+                );
+                ui.label(
+                    egui::RichText::new(v.as_str().unwrap_or(&v.to_string()).to_string())
+                        .monospace(),
+                );
+            });
+        }
+    }
 }

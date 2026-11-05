@@ -76,8 +76,8 @@ pub fn render(ui: &mut egui::Ui, app: &mut LogtoolsApp) {
             .add_enabled(can_search, theme::primary_button("Search"))
             .clicked()
         {
-            let _ = tools::config::save_config_param("last_search_base", &app.search_base);
-            let _ = tools::config::save_config_param("last_search_text", &app.search_text);
+            let _ = tools::state::save_state_param("last_search_base", &app.search_base);
+            let _ = tools::state::save_state_param("last_search_text", &app.search_text);
 
             let (date_from, date_to) = if app.search_use_date_filtering {
                 (

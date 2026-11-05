@@ -165,8 +165,8 @@ impl LogtoolsApp {
         app.cfg_sort_run_lines =
             tools::config::get_config_param("sort_run_lines").unwrap_or_default();
 
-        app.search_base = tools::config::get_config_param("last_search_base").unwrap_or_default();
-        app.search_text = tools::config::get_config_param("last_search_text").unwrap_or_default();
+        app.search_base = tools::state::get_state_param("last_search_base").unwrap_or_default();
+        app.search_text = tools::state::get_state_param("last_search_text").unwrap_or_default();
 
         app
     }

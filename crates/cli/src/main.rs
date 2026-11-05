@@ -1,5 +1,3 @@
-
-
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -120,6 +118,31 @@ enum Commands {
         var: Option<String>,
     },
 
+    /// Show / set application state (internal memory, not a config).
+    ///
+    /// Show all:
+    ///   logtools state
+    ///
+    /// Show one:
+    ///   logtools state <param>
+    ///
+    /// Set one:
+    ///   logtools state <param> <var>
+    ///
+    /// Known state parameters:
+    ///   last_search_base - base name used in the last search
+    ///   last_search_text - query used in the last search
+    #[command(verbatim_doc_comment)]
+    State {
+        /// Parameter name
+        #[arg(value_name = "PARAM")]
+        param: Option<String>,
+
+        /// Value to set
+        #[arg(value_name = "VAR")]
+        var: Option<String>,
+    },
+
     /// Delete a base (asks for confirmation unless confirm_delete=false in config)
     #[command(aliases = ["del", "rm"])]
     Delete {
@@ -136,7 +159,6 @@ enum Commands {
 // =========================
 // CONSOLE PRESENTER
 // =========================
-
 
 /// Green cli wordws.
 const OPERATION_WORDS: &[&str] = &[
@@ -165,7 +187,10 @@ struct ConsolePresenter {
 
 impl ConsolePresenter {
     fn new() -> Self {
-        Self { bar: None, last_message: None }
+        Self {
+            bar: None,
+            last_message: None,
+        }
     }
 
     fn make_bar() -> ProgressBar {
@@ -219,9 +244,7 @@ impl ConsolePresenter {
 
 impl Presenter for ConsolePresenter {
     fn progress(&mut self, pos: u64, total: u64) {
-        let pb = self
-            .bar
-            .get_or_insert_with(Self::make_bar);
+        let pb = self.bar.get_or_insert_with(Self::make_bar);
 
         pb.set_length(total);
         pb.set_position(pos);
@@ -312,6 +335,10 @@ fn exit_code_of(result: CommandResult) -> i32 {
 // =========================
 
 fn main() {
+    // Migrate legacy state from config.json to state.json on every run.
+    // Idempotent — moves `last_search_base`/`last_search_text` once.
+    let _ = tools::state::migrate_from_config();
+
     let cli = Cli::parse();
     let mut presenter = ConsolePresenter::new();
 
@@ -342,9 +369,7 @@ fn main() {
 
         Commands::ListBases => logtools_app::run_list_bases(&mut presenter),
 
-        Commands::Config { param, var } => {
-            logtools_app::run_config(param, var, &mut presenter)
-        }
+        Commands::Config { param, var } => logtools_app::run_config(param, var, &mut presenter),
 
         Commands::Delete { name, yes } => logtools_app::run_delete(name, yes, &mut presenter),
 
@@ -354,6 +379,8 @@ fn main() {
             es,
             no_everything,
         } => logtools_app::run_discover(root, out, es, no_everything, &mut presenter),
+
+        Commands::State { param, var } => logtools_app::run_state(param, var, &mut presenter),
     };
 
     presenter.finish_bar();

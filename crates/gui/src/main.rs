@@ -20,6 +20,8 @@ use app::LogtoolsApp;
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
+    let _ = tools::state::migrate_from_config();
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1000.0, 680.0])
