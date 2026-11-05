@@ -193,8 +193,6 @@ fn render_param_block(ui: &mut egui::Ui, app: &mut LogtoolsApp, def: &theme::Con
 
             let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
 
-            let visuals = ui.style().interact(&response);
-
             ui.painter().rect(
                 rect,
                 egui::CornerRadius::same(3),
