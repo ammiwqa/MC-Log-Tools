@@ -237,29 +237,187 @@ fn render_param_block(ui: &mut egui::Ui, app: &mut LogtoolsApp, def: &theme::Con
 
         ui.add_space(0.0);
 
+        // --- Input field / Numeric controls / Boolean toggle ---
         ui.horizontal(|ui| {
             ui.add_space(COLUMN_INDENT);
 
-            let width = input_width(ui);
+            let available = input_width(ui);
 
-            let hint_text = if def.key == "confirm_delete" {
-                "true / false"
-            } else if def.is_path {
-                "Path to file (empty = auto-detect)"
-            } else {
-                def.default_value
-            };
+            // Numeric parameters: square minus | short input | square plus
+            if def.key == "chunk_lines" || def.key == "sort_run_lines" {
+                let button_size = egui::vec2(24.0, 24.0);
+                let field_width = 90.0;
 
-            ui.add(
-                egui::TextEdit::singleline(current_value)
-                    .desired_width(width)
-                    .font(egui::TextStyle::Monospace)
-                    .frame(true)
-                    .margin(egui::vec2(INPUT_MARGIN_X, INPUT_MARGIN_Y))
-                    .hint_text(hint_text),
-            );
+                ui.spacing_mut().item_spacing.x = 0.0;
 
+                // Minus button
+                let (minus_rect, minus_response) =
+                    ui.allocate_exact_size(button_size, egui::Sense::click());
+
+                ui.painter().rect(
+                    minus_rect,
+                    egui::CornerRadius::same(3),
+                    theme::SURFACE,
+                    theme::stroke_1(theme::BORDER),
+                    egui::StrokeKind::Inside,
+                );
+
+                ui.painter().text(
+                    minus_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "−",
+                    egui::FontId::proportional(15.0),
+                    theme::TEXT,
+                );
+
+                if minus_response.clicked() {
+                    let value = current_value
+                        .parse::<u64>()
+                        .or_else(|_| def.default_value.parse::<u64>())
+                        .unwrap_or(0);
+
+                    *current_value = value.saturating_sub(1).to_string();
+                }
+
+                // Numeric input
+                let response = ui.add_sized(
+                    egui::vec2(field_width, 24.0),
+                    egui::TextEdit::singleline(current_value)
+                        .font(egui::TextStyle::Monospace)
+                        .margin(egui::vec2(5.0, 3.0)),
+                );
+
+                if response.changed() {
+                    current_value.retain(|c| c.is_ascii_digit());
+                }
+
+                // Plus button
+                let (plus_rect, plus_response) =
+                    ui.allocate_exact_size(button_size, egui::Sense::click());
+
+                ui.painter().rect(
+                    plus_rect,
+                    egui::CornerRadius::same(3),
+                    theme::SURFACE,
+                    theme::stroke_1(theme::BORDER),
+                    egui::StrokeKind::Inside,
+                );
+
+                ui.painter().text(
+                    plus_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "+",
+                    egui::FontId::proportional(15.0),
+                    theme::TEXT,
+                );
+
+                if plus_response.clicked() {
+                    let value = current_value
+                        .parse::<u64>()
+                        .or_else(|_| def.default_value.parse::<u64>())
+                        .unwrap_or(0);
+
+                    *current_value = value.saturating_add(1).to_string();
+                }
+            }
+            // Boolean parameter: compact OFF / ON switch
+            else if def.key == "confirm_delete" {
+                let is_on = if current_value.trim().is_empty() {
+                    def.default_value.eq_ignore_ascii_case("true")
+                } else {
+                    current_value.trim().eq_ignore_ascii_case("true")
+                };
+
+                let switch_width = 76.0;
+                let switch_height = 24.0;
+                let half_width = switch_width / 2.0;
+
+                ui.spacing_mut().item_spacing.x = 0.0;
+
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(switch_width, switch_height),
+                    egui::Sense::click(),
+                );
+
+                let left_rect =
+                    egui::Rect::from_min_size(rect.min, egui::vec2(half_width, switch_height));
+
+                let right_rect = egui::Rect::from_min_size(
+                    egui::pos2(rect.left() + half_width, rect.top()),
+                    egui::vec2(half_width, switch_height),
+                );
+
+                // Background
+                ui.painter().rect(
+                    rect,
+                    egui::CornerRadius::same(4),
+                    theme::SURFACE,
+                    theme::stroke_1(theme::BORDER),
+                    egui::StrokeKind::Inside,
+                );
+
+                // Active state background
+                let active_rect = if is_on { right_rect } else { left_rect };
+
+                ui.painter().rect_filled(
+                    active_rect.shrink(2.0),
+                    egui::CornerRadius::same(3),
+                    if is_on {
+                        theme::GREEN_DIM
+                    } else {
+                        theme::BORDER
+                    },
+                );
+
+                // OFF label
+                ui.painter().text(
+                    left_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "OFF",
+                    egui::FontId::proportional(11.0),
+                    if !is_on {
+                        theme::TEXT
+                    } else {
+                        theme::TEXT_MUTED
+                    },
+                );
+
+                // ON label
+                ui.painter().text(
+                    right_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "ON",
+                    egui::FontId::proportional(11.0),
+                    if is_on {
+                        theme::TEXT
+                    } else {
+                        theme::TEXT_MUTED
+                    },
+                );
+
+                if response.clicked() {
+                    *current_value = if is_on {
+                        "false".to_string()
+                    } else {
+                        "true".to_string()
+                    };
+                }
+            }
+            // Regular text input: file path
+            else {
+                ui.add(
+                    egui::TextEdit::singleline(current_value)
+                        .desired_width(available)
+                        .font(egui::TextStyle::Monospace)
+                        .frame(true)
+                        .margin(egui::vec2(INPUT_MARGIN_X, INPUT_MARGIN_Y))
+                        .hint_text("Path to file (empty = auto-detect)"),
+                );
+            }
+
+            // Modified marker
             if is_modified {
+                ui.add_space(5.0);
                 ui.label(
                     egui::RichText::new("\u{25CF}")
                         .size(9.0)
