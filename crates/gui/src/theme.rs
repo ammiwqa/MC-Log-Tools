@@ -75,12 +75,7 @@ pub fn small_button(text: &str) -> egui::Button<'_> {
 
 pub fn screen_title(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("//")
-                .color(GREEN)
-                .heading()
-                .strong(),
-        );
+        ui.label(egui::RichText::new("//").color(GREEN).heading().strong());
         ui.heading(egui::RichText::new(title));
     });
     ui.label(faint(subtitle).small());
@@ -296,55 +291,95 @@ pub fn strip_path_quotes(raw: &str) -> &str {
     trimmed.trim()
 }
 
-/// Config parameter definition for Zed-style rendering.
+// =========================
+// CONFIG PARAMETERS
+// =========================
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigParamType {
+    Number,
+    Boolean,
+    Text,
+    Path,
+}
+
 pub struct ConfigParamDef {
     pub key: &'static str,
     pub display_name: &'static str,
     pub description: &'static str,
     pub default_value: &'static str,
-    pub is_path: bool,
+    pub param_type: ConfigParamType,
+
+    pub min: Option<u64>,
+    pub max: Option<u64>,
+
+    pub hint: &'static str,
 }
 
 impl ConfigParamDef {
-    /// Check whether the given value equals the effective default.
-    /// An empty value always means "not set" -> the built-in default is used.
     pub fn is_default(&self, value: &str) -> bool {
         let trimmed = value.trim();
 
         trimmed.is_empty() || trimmed.eq_ignore_ascii_case(self.default_value)
     }
+
+    pub fn is_path(&self) -> bool {
+        self.param_type == ConfigParamType::Path
+    }
+
+    pub fn is_number(&self) -> bool {
+        self.param_type == ConfigParamType::Number
+    }
+
+    pub fn is_boolean(&self) -> bool {
+        self.param_type == ConfigParamType::Boolean
+    }
 }
 
-/// Returns the list of config parameter definitions in display order.
-pub fn config_param_defs() -> Vec<ConfigParamDef> {
-    vec![
-        ConfigParamDef {
-            key: "everything_dll",
-            display_name: "Everything DLL",
-            description: "Path to Everything64.dll or es.exe",
-            default_value: "",
-            is_path: true,
-        },
-        ConfigParamDef {
-            key: "chunk_lines",
-            display_name: "Chunk Lines",
-            description: "Lines per chunk file (default 500000).",
-            default_value: "500000",
-            is_path: false,
-        },
-        ConfigParamDef {
-            key: "sort_run_lines",
-            display_name: "Sort Run Lines",
-            description: "Lines buffered in RAM before a sorted run is spilled (default 250000).",
-            default_value: "250000",
-            is_path: false,
-        },
-        ConfigParamDef {
-            key: "confirm_delete",
-            display_name: "Confirm Delete",
-            description: "Ask before deleting a base (true/false, default true).",
-            default_value: "true",
-            is_path: false,
-        },
-    ]
+/// Настройки.
+pub const CONFIG_PARAMS: &[ConfigParamDef] = &[
+    ConfigParamDef {
+        key: "everything_dll",
+        display_name: "Everything DLL",
+        description: "Path to Everything64.dll or es.exe.",
+        default_value: "",
+        param_type: ConfigParamType::Path,
+        min: None,
+        max: None,
+        hint: "Path to file (empty = auto-detect)",
+    },
+    ConfigParamDef {
+        key: "chunk_lines",
+        display_name: "Chunk Lines",
+        description: "Lines per chunk file.",
+        default_value: "500000",
+        param_type: ConfigParamType::Number,
+        min: Some(1),
+        max: None,
+        hint: "500000",
+    },
+    ConfigParamDef {
+        key: "sort_run_lines",
+        display_name: "Sort Run Lines",
+        description: "Lines buffered in RAM before a sorted run is spilled.",
+        default_value: "250000",
+        param_type: ConfigParamType::Number,
+        min: Some(1),
+        max: None,
+        hint: "250000",
+    },
+    ConfigParamDef {
+        key: "confirm_delete",
+        display_name: "Confirm Delete",
+        description: "Ask before deleting a base.",
+        default_value: "true",
+        param_type: ConfigParamType::Boolean,
+        min: None,
+        max: None,
+        hint: "",
+    },
+];
+
+pub fn config_param_defs() -> &'static [ConfigParamDef] {
+    CONFIG_PARAMS
 }

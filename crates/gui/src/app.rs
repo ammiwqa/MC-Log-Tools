@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -104,10 +105,7 @@ pub struct LogtoolsApp {
     pub disc_skip_everything: bool,
     pub disc_es: String,
 
-    pub cfg_everything_dll: String,
-    pub cfg_confirm_delete: String,
-    pub cfg_chunk_lines: String,
-    pub cfg_sort_run_lines: String,
+    pub cfg_values: HashMap<&'static str, String>,
 }
 
 impl LogtoolsApp {
@@ -149,21 +147,17 @@ impl LogtoolsApp {
             disc_use_everything: true,
             disc_skip_everything: false,
             disc_es: String::new(),
-            cfg_everything_dll: String::new(),
-            cfg_confirm_delete: String::new(),
-            cfg_chunk_lines: String::new(),
-            cfg_sort_run_lines: String::new(),
+            cfg_values: HashMap::new(),
         };
 
         app.reload_bases();
 
-        app.cfg_everything_dll =
-            tools::config::get_config_param("everything_dll").unwrap_or_default();
-        app.cfg_confirm_delete =
-            tools::config::get_config_param("confirm_delete").unwrap_or_default();
-        app.cfg_chunk_lines = tools::config::get_config_param("chunk_lines").unwrap_or_default();
-        app.cfg_sort_run_lines =
-            tools::config::get_config_param("sort_run_lines").unwrap_or_default();
+        for def in theme::CONFIG_PARAMS {
+            let value = tools::config::get_config_param(def.key)
+                .unwrap_or_default();
+
+            app.cfg_values.insert(def.key, value);
+        }
 
         app.search_base = tools::state::get_state_param("last_search_base").unwrap_or_default();
         app.search_text = tools::state::get_state_param("last_search_text").unwrap_or_default();
@@ -173,6 +167,19 @@ impl LogtoolsApp {
 
     pub fn reload_bases(&mut self) {
         self.bases = logtools_app::operations::list_bases().unwrap_or_default();
+    }
+
+    pub fn config_value(&self, key: &str) -> &str {
+        self.cfg_values
+            .get(key)
+            .map(String::as_str)
+            .unwrap_or("")
+    }
+
+    pub fn config_value_mut(&mut self, key: &'static str) -> &mut String {
+        self.cfg_values
+            .entry(key)
+            .or_default()
     }
 
     pub fn spawn_command(&mut self, kind: CmdKind, cmd: GuiCommand) {
@@ -325,14 +332,12 @@ impl LogtoolsApp {
                 }
                 CmdKind::Discover => self.load_discover_preview(),
                 CmdKind::ConfigParams => {
-                    self.cfg_everything_dll =
-                        tools::config::get_config_param("everything_dll").unwrap_or_default();
-                    self.cfg_confirm_delete =
-                        tools::config::get_config_param("confirm_delete").unwrap_or_default();
-                    self.cfg_chunk_lines =
-                        tools::config::get_config_param("chunk_lines").unwrap_or_default();
-                    self.cfg_sort_run_lines =
-                        tools::config::get_config_param("sort_run_lines").unwrap_or_default();
+                    for def in theme::CONFIG_PARAMS {
+                        let value = tools::config::get_config_param(def.key)
+                            .unwrap_or_default();
+
+                        self.cfg_values.insert(def.key, value);
+                    }
                 }
             }
 
