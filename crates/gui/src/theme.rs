@@ -295,3 +295,56 @@ pub fn strip_path_quotes(raw: &str) -> &str {
         .unwrap_or(trimmed);
     trimmed.trim()
 }
+
+/// Config parameter definition for Zed-style rendering.
+pub struct ConfigParamDef {
+    pub key: &'static str,
+    pub display_name: &'static str,
+    pub description: &'static str,
+    pub default_value: &'static str,
+    pub is_path: bool,
+}
+
+impl ConfigParamDef {
+    /// Check whether the given value equals the effective default.
+    /// An empty value always means "not set" -> the built-in default is used.
+    pub fn is_default(&self, value: &str) -> bool {
+        let trimmed = value.trim();
+
+        trimmed.is_empty() || trimmed.eq_ignore_ascii_case(self.default_value)
+    }
+}
+
+/// Returns the list of config parameter definitions in display order.
+pub fn config_param_defs() -> Vec<ConfigParamDef> {
+    vec![
+        ConfigParamDef {
+            key: "everything_dll",
+            display_name: "Everything DLL",
+            description: "Path to Everything64.dll or es.exe",
+            default_value: "",
+            is_path: true,
+        },
+        ConfigParamDef {
+            key: "chunk_lines",
+            display_name: "Chunk Lines",
+            description: "Lines per chunk file (default 500000).",
+            default_value: "500000",
+            is_path: false,
+        },
+        ConfigParamDef {
+            key: "sort_run_lines",
+            display_name: "Sort Run Lines",
+            description: "Lines buffered in RAM before a sorted run is spilled (default 250000).",
+            default_value: "250000",
+            is_path: false,
+        },
+        ConfigParamDef {
+            key: "confirm_delete",
+            display_name: "Confirm Delete",
+            description: "Ask before deleting a base (true/false, default true).",
+            default_value: "true",
+            is_path: false,
+        },
+    ]
+}
